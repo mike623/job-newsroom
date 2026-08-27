@@ -39,6 +39,7 @@
       <td class="num">{{ run.jobs }}</td>
       <td>
         {% if run.has_log %}<a href="/scan/{{ run.run_id }}">log</a>
+        {% elif run.status in ('interrupted', 'failed') %}<span class="warn">no report</span>
         {% elif not run.healthy %}<span class="bad">found nothing</span>
         {% else %}<a href="/jobs?board={{ run.board }}&state=">jobs</a>{% endif %}
       </td>

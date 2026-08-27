@@ -59,6 +59,16 @@ class Job:
         return asdict(self)
 
 
+def link_target(destination: str) -> str:
+    """The href out of a markdown link target.
+
+    Reed renders its cards as `[Title](https://... "Title")`, so the captured target carries
+    the quoted title as well. Left on, it rides along in every report, breaks the href the
+    dashboard renders, and reaches the downstream pipeline as part of the URL.
+    """
+    return destination.strip().split(" ", 1)[0].strip("<>")
+
+
 def extract_job_id(url: str) -> str:
     m = re.search(r"/jobs/[^/]+/(\d+)", url)
     return m.group(1) if m else ""
@@ -70,7 +80,7 @@ def parse_jobs_from_markdown(markdown: str, spec: SearchSpec) -> list[Job]:
     jobs: list[Job] = []
     for match in pattern.finditer(markdown):
         title = match.group(1).strip()
-        url = urljoin(BASE, match.group(2).strip())
+        url = urljoin(BASE, link_target(match.group(2)))
         block = match.group(0).strip()
         lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
 

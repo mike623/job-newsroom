@@ -1,8 +1,12 @@
-"""Start scans from the dashboard and follow them while they run.
+"""Start scans and follow them while they run.
 
 A scan takes minutes, so it cannot happen inside a request. Each one is a subprocess running
 exactly the command the cron runs — no reimplementation of the pipeline, no crawl4ai inside
-the web process, and a crash takes the child rather than the dashboard.
+the web process, and a crash takes the child rather than its parent.
+
+Starting belongs to whichever process owns the resulting children: it holds the Process object,
+reaps it, and is the only one whose pid comparisons mean anything. Following does not — the log
+and the run record are files, so a reader in another process sees the same scan.
 
 The scan records itself: `reed_crawler/run_record` writes the history for every scan whatever
 started it, so the cron and a terminal appear alongside these. This module adds only what is
@@ -20,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "reed_crawler"))
 
 import run_record
+import scan_all
 from scan_all import COMMANDS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,7 +74,15 @@ def _as_run(raw: dict) -> ScanRun:
 
 
 def history(limit: int = 20) -> list[ScanRun]:
-    """Every recorded scan, newest first, whatever started it."""
+    """Every recorded scan, newest first, whatever started it.
+
+    Reconciled on the way past, if this process is the one that spawns scans. A scheduled scan
+    that is killed — the machine sleeps, launchd restarts the agent — cannot record its own
+    ending, and a record left saying "running" makes the dashboard refuse to scan that board ever
+    again. Doing it here rather than only at startup means the state heals itself instead of
+    needing a restart.
+    """
+    reconcile()
     runs = [_as_run(r) for r in run_record.load()]
     runs.sort(key=lambda r: r.started or r.id, reverse=True)
     return runs[:limit]
@@ -91,16 +104,40 @@ def _alive(pid) -> bool:
     return True
 
 
+SPAWNS_SCANS = False
+"""Whether this process starts scans, and so owns the pids in the run records.
+
+`reconcile` decides a scan is dead by signalling its pid, and a pid only means something in the
+namespace that created it. A dashboard in its own container asking after a runner container's pid
+is asking about a stranger: the answer is "no such process" for a scan that is running perfectly
+well, and the record gets marked interrupted underneath it. So judging pids is reserved for
+whoever spawned them, and every other process must leave the records alone.
+
+Claimed in the lifespan of whatever does the spawning — `runner.app` always, `dashboard.app` only
+when it has no runner to delegate to.
+"""
+
+
 def reconcile() -> None:
     """Mark runs whose process is gone.
 
     A scan records its own ending, but nothing can record being killed. Without this a
     dashboard or a machine that went down leaves records showing as running for ever.
+
+    Does nothing in a process that did not spawn the scans: see SPAWNS_SCANS.
     """
+    if not SPAWNS_SCANS:
+        return
     records = run_record.load()
+    watched = set(scans.processes)
     changed = False
     for record in records:
-        if record.get("status") == RUNNING and not _alive(record.get("pid")):
+        # Never touch a child this process is still watching: it has its own ending to write,
+        # and the moment between its exit and that write would otherwise look like a killing.
+        # No pid is not evidence of death either — only a process we can look for and find
+        # gone has been proved to have stopped.
+        if record.get("status") == RUNNING and record.get("id") not in watched \
+                and isinstance(record.get("pid"), int) and not _alive(record["pid"]):
             record["status"] = INTERRUPTED
             record["ended"] = record.get("ended") or datetime.now().isoformat(timespec="seconds")
             changed = True
@@ -166,7 +203,6 @@ class Scans:
         try:
             await process.wait()
         finally:
-            self.processes.pop(run.id, None)
             current = get(run.id)
             if current and current.status == RUNNING:
                 # The child died without recording an ending — killed, or crashed hard.
@@ -177,6 +213,8 @@ class Scans:
                     "exit_code": code,
                     "ended": datetime.now().isoformat(timespec="seconds"),
                 })
+            # Released last: until the outcome is written, this run is still ours to record.
+            self.processes.pop(run.id, None)
 
     async def start_and_wait(self, board: str, trigger: str = "pool") -> ScanRun:
         """Start a scan and return once it has finished.

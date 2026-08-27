@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "reed_crawler"))
 
 from board_config import jittered
-from dashboard import pool
+from runner import pool
 
 
 # ---- the per-domain limit ----

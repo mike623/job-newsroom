@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus, urlencode
@@ -26,6 +27,56 @@ def slug_text(s: str) -> str:
 
 def load_config(path: str | Path = ROOT / "config.yml") -> dict:
     return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+
+
+def set_board_enabled(board: str, enabled: bool, path: str | Path = ROOT / "config.yml") -> bool:
+    """Switch one board on or off in config.yml, leaving the rest of the file alone.
+
+    config.yml is written by hand and most of it is comments explaining why a number is what it
+    is. Rewriting it from parsed YAML would throw all of that away, so this edits the single
+    line and nothing else.
+
+    The result is parsed before it is kept, and compared against the config that was expected —
+    an edit that changed anything but this one value is a corrupted config file, and this is the
+    only input the whole project has. Returns True when the file was changed.
+    """
+    path = Path(path)
+    text = path.read_text(encoding="utf-8")
+    before = yaml.safe_load(text) or {}
+    if board not in (before.get("boards") or {}):
+        raise ValueError(f"no such board in {path.name}: {board}")
+    if bool((before["boards"][board] or {}).get("enabled")) == enabled:
+        return False
+
+    lines = text.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if re.match(rf"^  {re.escape(board)}:\s*(#.*)?$", line)), None)
+    if start is None:
+        raise ValueError(f"could not find the {board} block in {path.name}")
+    # The board's own keys are indented four spaces; anything deeper belongs to a sub-section
+    # (a board's `full_jd` block has an `enabled` of its own), and anything shallower has ended it.
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^ {0,2}\S", lines[i])), len(lines))
+
+    value = "true" if enabled else "false"
+    for i in range(start + 1, end):
+        found = re.match(r"^(    enabled:\s*)(true|false)(\s*(?:#.*)?)$", lines[i].rstrip("\n"))
+        if found:
+            lines[i] = f"{found.group(1)}{value}{found.group(3)}\n"
+            break
+    else:
+        lines.insert(start + 1, f"    enabled: {value}\n")
+
+    updated = "".join(lines)
+    expected = {**before, "boards": {**before["boards"],
+                                     board: {**(before["boards"][board] or {}), "enabled": enabled}}}
+    if (yaml.safe_load(updated) or {}) != expected:
+        raise ValueError(f"editing {board} would have changed more of {path.name} than its enabled flag")
+
+    # Written beside the original and moved into place, so an interrupted write cannot leave the
+    # project's only input half-finished.
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(updated, encoding="utf-8")
+    os.replace(temporary, path)
+    return True
 
 
 def run_stamp() -> str:
@@ -105,6 +156,10 @@ def haystack_search_url(title: str, location: str) -> str:
 def build_board_urls(cfg: dict, board: str) -> list[dict]:
     board_cfg = cfg["boards"][board]
     if not board_cfg.get("enabled", False):
+        return []
+    if board == "email":
+        # Not a search: this board reads labelled alert mail, so it has no URLs to build.
+        # See reed_crawler/email_pipeline.py.
         return []
     if board_cfg.get("search_params"):
         rows = []

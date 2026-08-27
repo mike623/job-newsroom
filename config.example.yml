@@ -119,6 +119,27 @@ boards:
       - k: Lead Software Engineer
         l: london
 
+  email:
+    # Not a crawl: the boards already email their alerts, and this reads the Gmail labels
+    # they are filed into via the `himalaya` CLI (brew install himalaya, then `himalaya`
+    # once to configure the account). The label says where to look, the sender says which
+    # URL rules apply, and a body signature says which layout to read — see
+    # reed_crawler/email_pipeline.py.
+    enabled: false
+    messages_per_label: 25   # newest N per label per run
+    max_age_days: 14         # ignore mail older than this
+    max_urls_per_message: 12 # a digest links its own footer as well as its jobs
+    mark_read: false         # flag mail that produced leads as seen, so a rerun skips it
+    labels:
+      - label: job/discovery/indeed
+        provider: indeed
+      - label: job/discovery/linkedin
+        provider: linkedin
+      - label: job/discovery/totaljobs
+        provider: totaljobs
+      - label: job/discovery/jobright
+        provider: jobright
+
 crawl:
   delay_seconds: 15              # Slow mode: wait between search pages.
   page_timeout_ms: 60000
@@ -128,10 +149,10 @@ crawl:
   headless: true
 
 career_ops:
-  # Downstream workspace that receives full-JD markdown + pipeline entries.
+  # Downstream workspace. The dashboard reads it to tell actioned jobs from the rest, and
+  # reed_crawler/ingest_jobspy.py appends pipeline entries to it by hand.
   # Overridable at runtime with the CAREER_OPS_WORKSPACE env var.
   workspace: ../career-ops
-  import_only_evidence_level: full_jd
 
 # Backward-compatible flat keys for older scripts. New code should prefer sections above.
 titles:

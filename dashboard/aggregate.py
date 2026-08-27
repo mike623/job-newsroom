@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUTS = ROOT / "outputs"
-BOARDS = ["reed", "totaljobs", "indeed", "talent", "adzuna", "haystack"]
+BOARDS = ["reed", "totaljobs", "indeed", "talent", "adzuna", "haystack", "email"]
 
 _STAMP = re.compile(r"_(\d{4}-\d{2}-\d{2}_\d{6})\.json$")
 
@@ -210,7 +210,8 @@ def runs(board: str = "", outputs: Path = OUTPUTS, recorded: list | None = None)
 
 
 def _recorded_runs() -> list:
-    from . import scans
+    # Reading a run is a file read, so it does not matter which process started the scan.
+    from runner import scans
     return scans.history(10_000)
 
 

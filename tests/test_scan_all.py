@@ -47,6 +47,54 @@ def test_no_board_is_scanned_with_a_flag_that_overrides_the_config():
 
 
 def test_the_dashboard_runs_the_same_commands_as_the_cron():
-    from dashboard import scans
+    from runner import scans
 
     assert scans.COMMANDS is scan_all.COMMANDS
+
+
+# ---- the schedule decides when they run ----
+
+def _run_main(monkeypatch, tmp_path, argv, due, enabled=("reed", "email")):
+    """Run main() with the boards `due` and record which ones actually got started."""
+    import schedule
+
+    started = []
+    config = tmp_path / "config.yml"
+    config.write_text("boards:\n" + "".join(f"  {b}:\n    enabled: true\n" for b in enabled),
+                      encoding="utf-8")
+    monkeypatch.setattr(schedule, "due", lambda *a, **k: list(due))
+    monkeypatch.setattr(scan_all.subprocess, "run",
+                        lambda command, **kw: started.append(command[1]) or _Ok())
+    monkeypatch.setattr(sys, "argv", ["scan_all.py", "--config", str(config), *argv])
+    return scan_all.main(), started
+
+
+class _Ok:
+    returncode = 0
+
+
+def test_due_scans_only_the_boards_the_schedule_asks_for(monkeypatch, tmp_path):
+    code, started = _run_main(monkeypatch, tmp_path, ["--due"], due=["email"])
+
+    assert code == 0
+    assert started == ["reed_crawler/email_pipeline.py"]
+
+
+def test_due_with_nothing_scheduled_is_a_quiet_success(monkeypatch, tmp_path):
+    # The timer runs every few minutes and mostly has nothing to do; that is not a failure.
+    code, started = _run_main(monkeypatch, tmp_path, ["--due"], due=[])
+
+    assert (code, started) == (0, [])
+
+
+def test_the_schedule_cannot_run_a_board_the_config_disabled(monkeypatch, tmp_path):
+    code, started = _run_main(monkeypatch, tmp_path, ["--due"], due=["indeed"], enabled=("reed",))
+
+    assert (code, started) == (0, [])
+
+
+def test_without_due_every_enabled_board_runs(monkeypatch, tmp_path):
+    code, started = _run_main(monkeypatch, tmp_path, [], due=[])
+
+    assert code == 0
+    assert len(started) == 2

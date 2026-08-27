@@ -28,3 +28,8 @@ outputs/
 .DS_Store
 .idea/
 .vscode/
+.gstack/
+
+# Container mail credentials (the Mac reads the login keychain instead)
+secrets/*
+!secrets/config.example.toml

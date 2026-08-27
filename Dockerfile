@@ -1,0 +1,43 @@
+# Two targets from one source tree. They differ only in whether Chromium is present: the runner
+# spawns crawls and needs it, the dashboard renders files and never launches a browser.
+#
+# Stage order is deliberate. Chromium is ~1GB and slow to fetch, so it is installed before any
+# source is copied — a code edit then invalidates only the final COPY, in both targets.
+
+FROM python:3.11-slim AS deps
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
+
+# What the runner needs beyond Python: Chromium for the crawled boards, and himalaya for the
+# email board, which reads a mailbox over IMAP instead of crawling.
+FROM deps AS runner-tools
+RUN playwright install --with-deps chromium
+
+# Fetched with Python rather than curl, which this base image does not carry. The asset names
+# are keyed on `uname -m` exactly (aarch64-linux, x86_64-linux), so this builds on an Apple
+# Silicon laptop and an x86 server without a second code path.
+ARG HIMALAYA_VERSION=1.2.0
+RUN python -c "import io, platform, tarfile, urllib.request; \
+url = f'https://github.com/pimalaya/himalaya/releases/download/v${HIMALAYA_VERSION}/himalaya.{platform.machine()}-linux.tgz'; \
+tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen(url, timeout=180).read())).extract('himalaya', '/usr/local/bin')" \
+ && chmod +x /usr/local/bin/himalaya \
+ && himalaya --version
+
+
+# Reads report files and renders them. No crawling, so no browser.
+FROM deps AS dashboard
+COPY . .
+EXPOSE 8080
+CMD ["python", "-m", "dashboard"]
+
+
+# Spawns the crawls.
+FROM runner-tools AS runner
+COPY . .
+EXPOSE 8081
+CMD ["python", "-m", "runner"]

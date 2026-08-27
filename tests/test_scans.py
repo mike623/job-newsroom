@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "reed_crawler"))
 
 import run_record
-from dashboard import scans
+from runner import scans
 from dashboard.app import app
 
 
@@ -25,6 +25,9 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(run_record, "STATE", tmp_path)
     monkeypatch.setattr(run_record, "RUNS_FILE", tmp_path / "runs.json")
     monkeypatch.setattr(scans, "LOG_DIR", tmp_path / "logs")
+    # These tests model the process that starts the scans, which is the only one allowed to
+    # judge whether their pids are still alive.
+    monkeypatch.setattr(scans, "SPAWNS_SCANS", True)
     return tmp_path
 
 
@@ -78,6 +81,22 @@ def test_a_run_whose_process_is_alive_is_left_running(isolated_state):
     scans.reconcile()
 
     assert scans.history()[0].status == scans.RUNNING
+
+
+def test_a_process_that_did_not_spawn_the_scan_never_judges_its_pid(isolated_state, monkeypatch):
+    """The dashboard reads these records from its own container.
+
+    A pid means nothing outside the namespace that made it, so signalling a runner's pid from the
+    dashboard reports a perfectly live scan as gone. Every page render calls history(), so left
+    unguarded this marks running scans interrupted and then lets a second one start.
+    """
+    monkeypatch.setattr(scans, "SPAWNS_SCANS", False)
+    write_records(isolated_state, [record(status=scans.RUNNING, pid=2 ** 30)])
+
+    scans.reconcile()
+
+    assert scans.history()[0].status == scans.RUNNING
+    assert scans.scans.board_is_running("reed") is True
 
 
 def test_finished_runs_are_untouched_by_reconciliation(isolated_state):
@@ -154,7 +173,7 @@ def client():
 
 def test_only_scanning_is_exposed():
     # Enriching and exporting write outside this project; they stay at the terminal.
-    assert set(scans.COMMANDS) == {"reed", "totaljobs", "talent", "indeed", "adzuna", "haystack"}
+    assert set(scans.COMMANDS) == {"reed", "totaljobs", "talent", "indeed", "adzuna", "haystack", "email"}
     for argv in scans.COMMANDS.values():
         assert "enrich" not in argv and "export" not in argv and "run" not in argv
 
@@ -178,3 +197,12 @@ def test_the_stream_reports_an_unknown_run_rather_than_hanging(isolated_state):
         return [chunk async for chunk in scans.scans.stream("nope")]
 
     assert "unknown run" in "".join(asyncio.run(collect()))
+
+
+def test_a_killed_scan_stops_looking_alive_without_a_restart(isolated_state):
+    # A scheduled scan the machine killed cannot record its own ending. Left as "running" it
+    # would block that board's button for ever.
+    write_records(isolated_state, [record(id="r1", board="email", status=scans.RUNNING, pid=999_999)])
+
+    assert scans.history()[0].status == scans.INTERRUPTED
+    assert scans.scans.board_is_running("email") is False

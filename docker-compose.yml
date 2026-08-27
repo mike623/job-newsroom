@@ -1,0 +1,97 @@
+# Three containers, one image.
+#
+#   timer   ──POST /scan-due──▶  runner  ──spawns──▶  crawls
+#   dashboard ──POST /scan/…──▶  runner
+#   dashboard ──reads outputs/──▶ history, status, live logs
+#
+# Only the runner ever spawns a scan. `scan_lock` decides whether a lock is still held by
+# signalling the pid that wrote it, and that answer is only true inside the namespace that owns
+# the pid — so two spawners would each read the other's live lock as stale and scan the same
+# board twice, doubling the request rate every delay in the crawler exists to avoid.
+#
+# Following a scan needs no such care: the run record and the log are files under outputs/, so
+# the dashboard reads a scan it did not start straight off the shared volume.
+services:
+  runner:
+    build:
+      context: .
+      target: runner
+    # No ports. Every endpoint here starts a crawl, so this is reachable from the compose
+    # network and nothing else — the same reason the dashboard binds loopback. Do not publish it.
+    environment:
+      RUNNER_HOST: 0.0.0.0
+      # The email board shells out to himalaya, which looks here for its account. Absent the
+      # file the board fails at scan time with himalaya's own error and the other six are
+      # unaffected — the container still starts.
+      HIMALAYA_CONFIG: /run/himalaya/config.toml
+    volumes:
+      # Data. Everything a scan produces is written straight to the host — reports, raw captures,
+      # run history, locks, logs. Nothing of it is ever baked into the image (.dockerignore skips
+      # outputs/ and config.yml), and a container is disposable because none of its state lives
+      # inside it. config.yml is always the host's file: the image ships only config.example.yml,
+      # so a container can never fall back to a stale copy of somebody's search terms.
+      - ./outputs:/app/outputs
+      - ${CONFIG_FILE:-./config.yml}:/app/config.yml
+      # The mail account and its password, read-only. Not baked into the image and not passed as
+      # environment variables, which `docker inspect` prints. See secrets/config.example.toml.
+      - ./secrets:/run/himalaya:ro
+      # Convenience: the checkout over the image's copy, so editing a board pipeline needs a
+      # `docker compose restart runner` rather than a rebuild. Delete this one line to run the
+      # image exactly as built; the two above are what must stay.
+      - .:/app
+    command: ["python", "-m", "runner"]
+    restart: unless-stopped
+
+  dashboard:
+    # The dashboard target carries no Chromium: it reads report files and never crawls.
+    build:
+      context: .
+      target: dashboard
+    depends_on: [runner]
+    environment:
+      # Loopback inside a container is the container's own. The published port below is what
+      # keeps the service off the network: it binds the host's loopback and nothing else.
+      DASHBOARD_HOST: 0.0.0.0
+      # Set means "ask the runner". Unset — running natively — means start scans in-process.
+      RUNNER_URL: http://runner:8081
+      # Where the mounted career-ops checkout lands. Without it the container would look for a
+      # sibling of /app and the /ingest page would report no workspace configured.
+      CAREER_OPS_WORKSPACE: /workspace/career-ops
+      # There is no launchd here. This names what does read the timetable, so the Schedule page
+      # reports the timer service instead of warning that nothing will run.
+      JOB_CRAWLER_TIMER: the timer service, every 10 minutes
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # As the runner. Both writable: the Schedule page edits boards.<name>.enabled in config.yml
+      # and writes outputs/state/schedule.json.
+      - ./outputs:/app/outputs
+      - ${CONFIG_FILE:-./config.yml}:/app/config.yml
+      # The downstream career-ops checkout, which lives outside this repo. Writable because
+      # `ingest_jobspy` appends to its data/pipeline.md — the only thing in this project that
+      # writes outside itself, and only when a person presses the button. Mounted here and not
+      # on the runner, so no scheduled scan can reach it however it is triggered.
+      - ${CAREER_OPS_DIR:-../career-ops}:/workspace/career-ops
+      - .:/app
+    restart: unless-stopped
+
+  timer:
+    # The whole timer: ask the runner what is due, every ten minutes. It needs no Docker socket
+    # and no privileges, because triggering a scan is now an HTTP request rather than a process
+    # to spawn — which is the point of the runner having an API. Swap in ofelia, a host cron, or
+    # a Kubernetes CronJob by pointing them at this same endpoint.
+    image: curlimages/curl:latest
+    depends_on: [runner]
+    command:
+      - sh
+      - -c
+      # One line per tick, and a line when a tick fails: a timer that has silently died
+      # looks exactly like one with nothing to do, which is the failure worth seeing.
+      - 'while true; do printf "%s scan-due " "$$(date -u +%FT%TZ)"; curl -fsS -X POST http://runner:8081/scan-due || printf "unreachable"; printf "\n"; sleep 600; done'
+    restart: unless-stopped
+
+networks:
+  default:
+    # Named rather than generated: ofelia's job-run joins it by name, and a generated name
+    # follows the directory this repo happens to sit in.
+    name: job-crawler

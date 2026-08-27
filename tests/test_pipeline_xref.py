@@ -122,3 +122,50 @@ def test_the_column_hides_when_there_is_no_workspace(monkeypatch):
 
     assert response.status_code == 200
     assert "not yet actioned" not in response.text
+
+
+EMAIL_PIPELINE = """\
+# Job Pipeline
+
+## Pendientes
+
+- [ ] https://www.linkedin.com/jobs/view/4455188953 | Harris Computer | Principal Software Engineer
+- [x] https://uk.indeed.com/rc/clk?jk=f7f9cde5007d5654&from=ja | Certica | Senior Full Stack Engineer
+- [ ] https://www.totaljobs.com/job/107857792 | Client Server | Lead Software Engineer
+- [ ] https://jobright.ai/jobs/info/68a3f2b1c9 | Magnify | Staff Software Engineer
+
+## Processed
+"""
+
+
+@pytest.fixture
+def email_workspace(tmp_path):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "pipeline.md").write_text(EMAIL_PIPELINE, encoding="utf-8")
+    return tmp_path
+
+
+def test_email_leads_are_recognised_by_the_id_the_board_gave_them(email_workspace):
+    statuses = pipeline.load(email_workspace)
+    assert statuses[("email", "linkedin-4455188953")].present
+    assert statuses[("email", "indeed-f7f9cde5007d5654")].done
+    assert statuses[("email", "totaljobs-107857792")].present
+    assert statuses[("email", "jobright-68a3f2b1c9")].present
+
+
+def test_a_forwarded_posting_still_marks_the_board_that_crawled_it(email_workspace):
+    # One advert can reach the pipeline as an email lead and be sitting in Totaljobs' own
+    # report under its numeric id; the line has to satisfy both.
+    statuses = pipeline.load(email_workspace)
+    assert statuses[("totaljobs", "107857792")].present
+    assert statuses[("indeed", "f7f9cde5007d5654")].done
+
+
+def test_a_stated_id_identifies_an_entry_whose_url_cannot(tmp_path):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "pipeline.md").write_text(
+        "## Pending\n\n"
+        "- [ ] https://uk.indeed.com/pagead/clk?ad=blob | job_id=email-indeed-9f8e7d6c5b4a"
+        " | Profile 29 | Principal Software Engineer\n", encoding="utf-8")
+    statuses = pipeline.load(tmp_path)
+    assert statuses[("email", "indeed-9f8e7d6c5b4a")].present

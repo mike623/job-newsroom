@@ -1,0 +1,14 @@
+.git
+.venv
+venv
+outputs
+config.yml
+secrets
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.omc
+.gstack
+.DS_Store

@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "reed_crawler"))
+
+import email_pipeline
 
 _ENTRY = re.compile(r"^-\s*\[(?P<tick>[ xX])\](?P<body>.*)$", re.M)
 
@@ -25,7 +29,7 @@ _ENTRY = re.compile(r"^-\s*\[(?P<tick>[ xX])\](?P<body>.*)$", re.M)
 # crawler's own "local:jds/<board>-<id>-..." imports.
 _IDENTIFIERS = [
     ("reed", re.compile(r"reed\.co\.uk/jobs/[^/\s]+/(\d+)")),
-    ("totaljobs", re.compile(r"totaljobs\.com/job/[^\s|]*?job(\d+)")),
+    ("totaljobs", re.compile(r"totaljobs\.com/job/(?:[^\s|]*?job)?(\d+)")),
     ("indeed", re.compile(r"indeed\.com/\S*?[?&]jk=([A-Za-z0-9]+)")),
     ("talent", re.compile(r"talent\.com/view\?id=(\d+)")),
     # Adzuna hands back two link shapes for the same advert: /jobs/details/<id> and a
@@ -36,12 +40,27 @@ _IDENTIFIERS = [
     ("haystack", re.compile(r"haystack\.cv/jobs/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")),
 ]
 _LOCAL_IMPORT = re.compile(r"local:jds/([a-z]+)-([^-\s]+)-")
+_URL = re.compile(r"https?://[^\s|]+")
+# `ingest_jobspy` states the id it filed an entry under; a sponsored Indeed link is a
+# different URL in every mail, so the URL alone cannot always identify the job.
+_STATED_ID = re.compile(r"job_id=([a-z]+)-(\S+)")
 
 
 def _identify(line: str) -> set[tuple[str, str]]:
-    """Every (board, job_id) a pipeline line refers to."""
+    """Every (board, job_id) a pipeline line refers to.
+
+    The email board has no URL shape of its own: it forwards LinkedIn, Indeed, Totaljobs and
+    Jobright postings, and it is the id it derived from that URL that names the job here. So
+    the recognition is asked of the board itself rather than restated as another regex — one
+    definition of an email lead's id, in `email_pipeline`.
+    """
     found = {(board, m.group(1)) for board, pattern in _IDENTIFIERS for m in pattern.finditer(line)}
     found |= {(m.group(1), m.group(2)) for m in _LOCAL_IMPORT.finditer(line)}
+    found |= {(m.group(1), m.group(2)) for m in _STATED_ID.finditer(line)}
+    for url in _URL.findall(line):
+        job_id = email_pipeline.job_id_from_url(url)
+        if job_id:
+            found.add(("email", job_id))
     return found
 
 

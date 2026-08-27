@@ -20,10 +20,12 @@
       <th class="num">Scans</th>
       <th>Last scan</th>
       <th class="num">Found then</th>
+      <th>Next</th>
     </tr>
   </thead>
   <tbody>
   {% for s in summaries %}
+    {% set when = timetable.get(s.board) %}
     <tr>
       <td>{{ s.board }}</td>
       {% if s.scanned %}
@@ -35,11 +37,23 @@
       {% else %}
         <td class="never" colspan="5">never scanned</td>
       {% endif %}
+      <td class="{{ 'warn' if when and when.overdue else 'muted' }}" style="font-size:12px">
+        {%- if when and when.enabled %}{{ 'due now' if when.overdue else when.next_due }}
+        {%- else %}—{% endif %}
+      </td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
+
+{% if scheduled and not timer.loaded %}
+<p class="bad" style="border:1px solid var(--line); border-radius:10px; padding:11px 14px;
+                      background:var(--panel); font-size:13px">
+  {{ scheduled | length }} board{{ '' if scheduled | length == 1 else 's' }} scheduled, but the timer is
+  not loaded — nothing will run on its own. <a href="/schedule">Schedule</a>
+</p>
+{% endif %}
 
 <h2>Run a scan</h2>
 <div class="tiles">
