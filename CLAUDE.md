@@ -2,11 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-The project is presented to users as **Job Newsroom** — the dashboard header, page titles and the
-README all use that name. Internally nothing was renamed: the directory is still `reed_crawler/`,
-the config key is still `boards:`, `outputs/<board>/` is still the layout on disk, and the GitHub
-repo is still `mike623/job-board-crawler`. Read "board" and "source" as the same thing; write
-"board" in code and "source" in user-facing copy.
+The project is **Job Newsroom**, on GitHub at `mike623/job-newsroom`. Its first home,
+`mike623/job-board-crawler`, is archived: read-only, still public, and where the pre-rebrand
+issues and pull requests stayed behind. Commits before the rebrand reference PR numbers that
+resolve there, not here.
+
+Internally nothing was renamed. The directory is still `reed_crawler/`, the config key is still
+`boards:`, and `outputs/<board>/` is still the layout on disk. Read "board" and "source" as the
+same thing; write "board" in code and "source" in user-facing copy.
 
 ## Commands
 
@@ -182,7 +185,7 @@ and what an external cron would run.
 
 ### Issue tracker
 
-GitHub Issues on `mike623/job-board-crawler`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+GitHub Issues on `mike623/job-newsroom`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

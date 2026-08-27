@@ -110,8 +110,8 @@ collectors write, so it cannot disagree with them, and deleting the service lose
 ### With Docker (recommended)
 
 ```bash
-git clone git@github.com:mike623/job-board-crawler.git
-cd job-board-crawler
+git clone git@github.com:mike623/job-newsroom.git
+cd job-newsroom
 cp config.example.yml config.yml       # compose mounts it; the image never bakes it in
 
 docker compose up -d --build
