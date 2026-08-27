@@ -1,7 +1,7 @@
 [project]
-name = "job-board-crawler"
+name = "job-newsroom"
 version = "0.1.0"
-description = "Low-volume Crawl4AI discovery pipelines for Reed, Totaljobs, Indeed and Talent.com."
+description = "A one-person newsroom for the job market: collects listings from seven sources and shows what changed."
 requires-python = ">=3.11"
 dependencies = [
   "crawl4ai>=0.9.2",

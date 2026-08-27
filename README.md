@@ -1,77 +1,146 @@
-# :mag: job-board-crawler
+# Job Newsroom
 
 ![Python version](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 [![Crawl4AI](https://img.shields.io/badge/built%20with-Crawl4AI-6f42c1.svg)](https://github.com/unclecode/crawl4ai)
 [![FastAPI](https://img.shields.io/badge/dashboard-FastAPI-009485.svg)](https://fastapi.tiangolo.com/)
-![Boards](https://img.shields.io/badge/boards-Reed%20%7C%20Totaljobs%20%7C%20Indeed%20%7C%20Talent.com%20%7C%20Adzuna-success.svg)
+![Sources](https://img.shields.io/badge/sources-7-success.svg)
+![Tests](https://img.shields.io/badge/tests-299%20passing-success.svg)
 
-> Watches five UK job boards, keeps track of what appears and disappears, and shows you the difference
+> A one-person newsroom for the job market
 
-Job boards render their listings with JavaScript, rate-limit aggressively, and never tell you what changed since yesterday. This drives a real headless browser through Reed, Totaljobs, Indeed and Talent.com — slowly enough not to get blocked — reads Adzuna from its JSON API, then serves a local dashboard over everything it has collected.
+Seven sources file the same story every morning, in different words, with the tracking links
+changed. Job boards render with JavaScript, rate-limit aggressively, wrap every posting in a
+per-recipient URL, and never tell you what changed since yesterday.
 
-Because every scan is kept, the dashboard can answer things a single search cannot: which jobs are new, which have quietly disappeared, how long one has been open, and which you have already dealt with.
+Job Newsroom runs the desk. It collects from all seven, reconciles them into one story per job,
+and shows you the edition: what is new, what has quietly disappeared, how long something has been
+open, and what you have already dealt with.
+
+![The overview](docs/screenshots/overview.png)
 
 ```bash
-python -m dashboard          # http://127.0.0.1:8080
+docker compose up -d --build     # http://127.0.0.1:8080
 ```
 
-## Features
+## What you get
 
-- **Five boards, one config.** Reed, Totaljobs, Indeed, Talent.com and Adzuna, all driven from a single `config.yml`.
-- **Job-centric history.** Every job appears once, with when it was first and last seen and how many scans have seen it.
-- **Structured salary.** Free text like `£70k - 85k per year` or `71,250-118,000 Annual` becomes a sortable minimum, maximum and period.
-- **Scan from the browser.** Start a board and watch its output stream live; the scan survives closing the page.
-- **Slow by design.** Per-host request rates are bounded and delays are jittered, so concurrency never costs a board extra traffic.
-- **One scan per board.** A file lock the cron inherits, so a manual scan and a scheduled one cannot collide.
-- **Knows what you've actioned.** Cross-references a downstream workspace, read-only, so you can filter to what is untouched.
-- **Honest failures.** A page that comes back empty is reported as a broken scan, not as a search with no matches.
+- **Seven sources, one config.** Reed, Totaljobs, Indeed, Talent.com, Adzuna, Haystack and your Gmail alert labels, all driven from a single `config.yml`.
+- **One story per job.** Every job appears once, with when it was first and last seen and how many editions have carried it.
+- **Deduped across sources.** The same posting arriving as a Totaljobs magic link, a LinkedIn tracker and an Indeed click wrapper is one row, not four.
+- **Structured pay.** Free text like `£70k - 85k per year` becomes a sortable minimum, maximum and period.
+- **File from the browser.** Start a source and watch its output stream live; the run survives closing the page.
+- **Slow by design.** Per-host request rates are bounded and delays jittered, so filing from seven sources at once costs no source extra traffic.
+- **Honest failures.** A page that comes back empty is reported as a broken run, not as a search with no matches.
+
+## The desk
+
+| Page | What it answers |
+| --- | --- |
+| `/` | How is each source doing, and what shall I file? |
+| `/jobs` | What is out there, and what have I not looked at? |
+| `/jobs/<source>/<id>` | What is this advert, and how long has it been open? |
+| `/runs` | Did anything break? |
+| `/schedule` | When does each source file, and what is due? |
+| `/ingest` | What is worth sending on? |
+| `/export.csv` | Give me the current filter as a spreadsheet |
+
+### One story, followed over time
+
+Every sighting is kept, so a job accumulates a history rather than a timestamp. This one has been
+open since the 6th of August and has appeared in 58 runs since.
+
+![A job's history](docs/screenshots/job-detail.png)
+
+### The wire
+
+1,640 jobs across seven sources, filterable by source, pay floor, and whether they have already
+reached your downstream workspace.
+
+![The jobs list](docs/screenshots/jobs.png)
+
+### Filing live
+
+Runs take minutes, so they happen in their own process and stream back to the page. Here the email
+source reads four Gmail labels, recognises seven alert layouts, and reduces 567 raw leads to 379.
+
+![A live run](docs/screenshots/scan-live.png)
+
+> [!NOTE]
+> The three `unrecognized template` lines are the point, not a bug. A digest names one of its 25
+> jobs in the subject, so attributing the subject to all of them would invent data. Unknown layouts
+> are printed by id and subject instead, so a changed layout reads as work to do.
+
+### The rota
+
+Three files, each answering one question, and no scheduler that knows about the others.
+
+![The schedule page](docs/screenshots/schedule.png)
+
+### Sending leads on
+
+![The ingest page](docs/screenshots/ingest.png)
+
+### What broke
+
+![The runs page](docs/screenshots/runs.png)
 
 ## How it works
 
 ```
                     ┌──────────────┐
-   config.yml ─────▶│     scan     │  one lock per board, jittered delays
+   config.yml ─────▶│     run      │  one lock per source, jittered delays
                     └──────┬───────┘
                            │ writes, never overwrites
                            ▼
-        outputs/<board>/raw/<search>__<stamp>.{md,html}   ← evidence
-        outputs/<board>/reports/<board>_deduped_<stamp>.json
+        outputs/<source>/raw/<search>__<stamp>.{md,html,json}   ← evidence
+        outputs/<source>/reports/<source>_deduped_<stamp>.json
                            │
                            │ re-read on every request, no index
                            ▼
                     ┌──────────────┐
-                    │  dashboard   │──▶ overview · jobs · runs · CSV
+                    │  the desk    │──▶ overview · jobs · runs · schedule · ingest · CSV
                     └──────────────┘
 ```
 
-Nothing is cached and nothing is precomputed. The dashboard reads the same report files the crawler writes, so it cannot disagree with them, and deleting the service loses nothing.
+Nothing is cached and nothing is precomputed. The dashboard reads the same report files the
+collectors write, so it cannot disagree with them, and deleting the service loses nothing.
 
 ## Getting started
 
-### Prerequisites
-
-- Python 3.11 or later
-- A Chromium install for Playwright, which `crawl4ai-doctor` sets up for you
-
-### Installation
+### With Docker (recommended)
 
 ```bash
 git clone git@github.com:mike623/job-board-crawler.git
 cd job-board-crawler
+cp config.example.yml config.yml       # compose mounts it; the image never bakes it in
 
+docker compose up -d --build
+open http://127.0.0.1:8080
+```
+
+### Natively
+
+```bash
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements.txt
 
-crawl4ai-doctor              # installs and verifies the headless browser
+crawl4ai-doctor                        # installs and verifies the headless browser
 cp config.example.yml config.yml
+
+python -m dashboard                    # http://127.0.0.1:8080
+python -m dashboard --reload           # restart on code and template changes
 ```
 
-`config.yml` is gitignored — it holds your salary targets and locations.
+`config.yml` is gitignored — it holds your salary targets, locations and API credentials.
 
-### Configuration
+> [!IMPORTANT]
+> The dashboard binds to loopback and has no host option. It can start runs, so it must not be
+> reachable from the network.
 
-Titles and locations are declared once in named groups, then referenced per board:
+## Configuration
+
+Titles and locations are declared once in named groups, then referenced per source:
 
 ```yaml
 search:
@@ -90,80 +159,98 @@ boards:
     max_pages_per_run: 8
 ```
 
-Check what URLs your config produces without crawling anything:
+Check what URLs your config produces without fetching anything:
 
 ```bash
 python reed_crawler/board_config.py
 ```
 
-> [!IMPORTANT]
-> The low `max_pages_per_run` and multi-second `delay_seconds` defaults are deliberate. Job boards block scrapers that move quickly. Raise them gradually and expect to be blocked if you don't.
+> [!WARNING]
+> The low `max_pages_per_run` and multi-second `delay_seconds` defaults are deliberate. Job boards
+> block scrapers that move quickly. Raise them gradually and expect to be blocked if you don't.
 
-## The dashboard
+## The sources
 
-```bash
-python -m dashboard              # http://127.0.0.1:8080
-python -m dashboard --reload     # restart on code and template changes
-```
-
-Bound to loopback only, with no host option: it can start scans, so it must not be reachable from the network.
-
-| Page | What it answers |
-| --- | --- |
-| `/` | How is each board doing, and what shall I scan? |
-| `/jobs` | What is out there, and what have I not looked at? |
-| `/jobs/<board>/<id>` | What is this advert, and how long has it been open? |
-| `/runs` | Did the crawler break? |
-| `/export.csv` | Give me the current filter as a spreadsheet |
-
-Filter jobs by board, by a pay floor, and by whether they have already reached your downstream workspace. Sort by pay, dates, company or how many times a job has been seen.
-
-### Running scans
-
-Scans take minutes, so they run as background subprocesses — exactly the commands the cron runs. Output streams to the browser, and closing the page does not stop the scan.
-
-Scanning all boards runs them concurrently. They are separate hosts, so this costs no board a single extra request: within one host the limit stays at one crawl unless proxies are configured, because rate limits are per IP and splitting by search term changes what you ask for, not how often.
-
-> [!TIP]
-> With one worker per board the pool saturates at the number of enabled boards. It is there for queueing and visibility, not for speed.
-
-## The command line
-
-The dashboard is a convenience; every scan is a plain script.
-
-```bash
-python reed_crawler/scan_all.py --config config.yml [--limit N]   # every enabled board
-python reed_crawler/scan_all.py --due --config config.yml          # only what the schedule says is due
-
-python reed_crawler/run_reed_scan.py --config config.yml [--limit N]
-python reed_crawler/totaljobs_pipeline.py scan --config config.yml [--limit N]
-python reed_crawler/talent_pipeline.py scan --config config.yml --limit 1
-python reed_crawler/indeed_pipeline.py scan --config config.yml [--allow-disabled]
-python reed_crawler/adzuna_pipeline.py scan --config config.yml [--allow-disabled]
-python reed_crawler/email_pipeline.py scan --config config.yml [--allow-disabled] [--mark-read]
-
-python reed_crawler/ingest_jobspy.py --latest email --dry-run   # what would reach career-ops
-python reed_crawler/ingest_jobspy.py outputs/email/reports/email_deduped_<stamp>.json
-```
-
-`scan_all.py` takes its board list from `boards.<name>.enabled`, so turning a board on or off is a config edit rather than a change to the cron. A single board's script still runs on its own; `--allow-disabled` scans Indeed when the config has it off, for manual smoke tests only.
-
-`--limit N` caps the search pages for one run. Every scan takes its board's lock, so the cron, a terminal and the dashboard all stay out of each other's way; a scan that finds the board busy exits **75**, and one where no search returned a usable page exits non-zero.
-
-### Board reference
-
-| Board | Parsed from | Notes |
+| Source | Read from | Notes |
 | --- | --- | --- |
-| **Reed** | Markdown headings | Full field coverage; the most reliable board |
+| **Reed** | Markdown headings | Full field coverage; the most reliable source |
 | **Totaljobs** | Markdown cards | Anchored on the card's `more` line |
 | **Indeed** | HTML | Card links are click wrappers with no job id; the HTML has one |
 | **Talent.com** | Markdown cards | Needs a seed result `id` to hydrate — see below |
-| **Adzuna** | JSON API | Not crawled at all: the site 403s every bot. Needs free API credentials — see below |
-| **Email** | Gmail labels | Not crawled at all: reads the alert mail the boards already send — see below |
+| **Haystack** | HTML | A client-rendered SPA; fields are anchored on their icons — see below |
+| **Adzuna** | JSON API | Not crawled at all: the site 403s every bot. Needs free API credentials |
+| **Email** | Gmail labels | Not crawled at all: reads the alert mail the sources already send |
 
-### Talent.com
+Three of the seven are not crawls, and that is the interesting part.
 
-Talent.com can return an unhydrated shell for `https://uk.talent.com/jobs?k=...&l=...`. Supplying a live result `id` forces the list to render:
+### Adzuna reads an API
+
+`adzuna.co.uk` sits behind CloudFront, which answers every automated request with a bare 403 —
+curl and headless Chromium alike, whatever user agent is offered. There is no markup to parse, so
+this source reads Adzuna's [JSON search API](https://developer.adzuna.com/) instead. Register free,
+then:
+
+```yaml
+boards:
+  adzuna:
+    enabled: true
+    app_id: "..."          # or export ADZUNA_APP_ID
+    app_key: "..."         # or export ADZUNA_APP_KEY
+    distance: 30           # kilometres
+    results_per_page: 50   # the API's maximum
+```
+
+Credentials are attached at request time only, so no capture, report or log line ever contains the
+key. Pay arrives as numbers rather than advertiser prose — where `salary_is_predicted` is set, the
+figure is Adzuna's own estimate and says so.
+
+### Email reads your mailbox
+
+The sources already email their alerts, so this one reads them rather than asking for the same jobs
+twice. It needs the [`himalaya`](https://github.com/pimalaya/himalaya) CLI configured against the
+account (`brew install himalaya`, then run `himalaya` once):
+
+```yaml
+boards:
+  email:
+    enabled: true
+    messages_per_label: 25   # newest N per label per run
+    max_age_days: 14
+    mark_read: false         # flag mail that produced leads, so a rerun skips it
+    labels:
+      - label: job/discovery/indeed
+        provider: indeed
+      - label: job/discovery/linkedin
+        provider: linkedin
+```
+
+Three axes stay separate. The **label** says which mailbox to read; the **sender** decides which
+provider's URL rules apply, because mail filed by hand lands under the wrong label; and a **body
+signature** picks the template that knows that sender's current layout.
+
+Per-recipient links are stripped before a lead is kept. Totaljobs wraps a posting in a magic-link
+JWT, LinkedIn and Jobright append per-email tracking, and Totaljobs digests link through
+`totaljobsmail.com` trackers resolved by reading `Location` headers only. Indeed's `cts.indeed.com`
+wrappers are decoded locally — the destination is a gzipped blob inside the link, and Indeed blocks
+automated traffic hard. Untouched, one posting yields a different URL in every mail and dedup never
+fires.
+
+### Haystack is a SPA
+
+haystack.cv renders a whole card as one link whose text runs title, company, location, salary and
+posted date together with no separator, so markdown cannot recover the fields. It is parsed from
+HTML instead, anchored on the lucide icon that labels each one (`lucide-building2` → company,
+`lucide-map-pin` → location). The surrounding utility classes are generated and will churn; the icon
+names are the stable part.
+
+> [!NOTE]
+> An empty Haystack run can be the site, not the parser. Its search backend intermittently answers
+> "Something went wrong loading jobs" on an otherwise healthy page; the run retries once and then
+> records zero leads.
+
+### Talent.com needs a seed
+
+Talent.com can return an unhydrated shell. Supplying a live result `id` forces the list to render:
 
 ```yaml
 boards:
@@ -178,174 +265,141 @@ boards:
 
 It rate-limits harder than the others; keep the volume low.
 
-### Adzuna
+## The command line
 
-`adzuna.co.uk` sits behind CloudFront, which answers every automated request with a bare 403 — curl and headless Chromium alike, whatever user agent is offered. There is no markup to parse, so this board reads Adzuna's [JSON search API](https://developer.adzuna.com/) instead. Register free, then:
-
-```yaml
-boards:
-  adzuna:
-    enabled: true
-    app_id: "..."          # or export ADZUNA_APP_ID
-    app_key: "..."         # or export ADZUNA_APP_KEY
-    title_groups: [primary]
-    location_groups: [core]
-    distance: 30           # kilometres
-    results_per_page: 50   # the API's maximum
-```
-
-`config.yml` is gitignored, so credentials are safe there; the environment variables win when set. They are attached at request time only, so no capture, report or log line ever contains the key. Pay comes back as numbers rather than as advertiser prose — where `salary_is_predicted` is set, the salary is Adzuna's own estimate and says so.
-
-### Email alerts
-
-The boards email their own alerts, so this board reads them instead of asking for the same jobs twice. It needs the [`himalaya`](https://github.com/pimalaya/himalaya) CLI configured against the account (`brew install himalaya`, then run `himalaya` once):
-
-```yaml
-boards:
-  email:
-    enabled: true
-    messages_per_label: 25   # newest N per label per run
-    max_age_days: 14
-    mark_read: false         # flag mail that produced leads as seen, so a rerun skips it
-    labels:
-      - label: job/discovery/indeed
-        provider: indeed
-      - label: job/discovery/linkedin
-        provider: linkedin
-```
-
-The label says which mailbox to read; the **sender** decides which provider's URL rules apply, because mail filed by hand lands under the wrong label; and a body signature picks the template that knows that sender's current layout. A digest lists 6-25 jobs under a subject naming one of them, so each job's title, company and location are read from the block its own link sits in — mail whose layout is not recognised is listed by id and subject at the end of the run rather than inheriting the subject.
-
-Per-recipient links (Totaljobs magic links, LinkedIn and Jobright tracking) are reduced to the public posting, so the same job seen in five mails is one row. Indeed's `cts.indeed.com` click wrappers are decoded locally — the destination is inside the link — and its sponsored postings, which carry no job id at all, are identified by title and company instead so they do not reappear as new jobs each morning.
-
-### Sending leads downstream
-
-A report is everything a board showed; `ingest_jobspy.py` decides what is worth opening and appends it to the career-ops pipeline:
+The dashboard is a convenience; every run is a plain script.
 
 ```bash
-python reed_crawler/ingest_jobspy.py --latest email --dry-run   # print, write nothing
-python reed_crawler/ingest_jobspy.py --latest email
-python reed_crawler/ingest_jobspy.py jobspy-export.csv --max-age-days 30
+python reed_crawler/scan_all.py --config config.yml [--limit N]   # every enabled source
+python reed_crawler/scan_all.py --due --config config.yml         # only what the rota says is due
+
+python reed_crawler/run_reed_scan.py --config config.yml [--limit N]
+python reed_crawler/totaljobs_pipeline.py scan --config config.yml [--limit N]
+python reed_crawler/talent_pipeline.py scan --config config.yml --limit 1
+python reed_crawler/haystack_pipeline.py scan --config config.yml [--limit N]
+python reed_crawler/indeed_pipeline.py scan --config config.yml [--allow-disabled]
+python reed_crawler/adzuna_pipeline.py scan --config config.yml [--allow-disabled]
+python reed_crawler/email_pipeline.py scan --config config.yml [--allow-disabled] [--mark-read]
 ```
 
-Relevance comes from **career-ops/portals.yml** — the same `title_filter` and `location_filter` its own scanner uses — so there is one definition of a relevant job rather than two. Rows already in `data/pipeline.md` or `data/scan-history.tsv` are skipped, as is one req posted to several cities. It reads a JobSpy CSV export too, which is the shape it was ported from.
+`scan_all.py` takes its source list from `boards.<name>.enabled`, so turning one on or off is a
+config edit rather than a change to the cron. `--limit N` caps the search pages for one run.
 
-The dashboard's **Ingest** page shows the same preview as two tables: boards with their counts
-and a button each (plus **Send all**), and every candidate job as a filterable row — by board, or
-by text across title, company and location. Filtering changes what you read, not what a button
-sends, since ingest appends a whole report. Nothing here ever happens on a schedule — the
-scheduler has no route into the workspace at all, and a test asserts it.
+Every run takes its source's lock, so the timer, a terminal and the dashboard stay out of each
+other's way. A run that finds the source busy exits **75**; one where no search returned a usable
+page exits non-zero.
 
 ## Scheduling
-
-Install the timer once:
 
 ```bash
 python reed_crawler/install_timer.py --install     # a launchd agent, every 10 minutes
 ```
 
-It runs `scan_all.py --due` and nothing else. What that scans is decided by three files, each
-answering one question — `config.yml` whether a board may run, `outputs/state/schedule.json` when
-it should, and the run history when it last did — so **changing the timetable never means touching
-launchd again**. Edit it on the dashboard's **Schedule** page. Each row has two boxes, and they mean different
-things: **Enabled** is `boards.<name>.enabled` in `config.yml` — whether the board runs at all,
-for the cron, the terminal and "scan all" alike — and **Scheduled** is this timetable, when the
-timer should start it. A board that is scheduled but not enabled never runs. Times are either
-fixed (`07:00, 18:30`) or an interval with an optional active window, plus the days they apply.
+It runs `scan_all.py --due` and nothing else. What that files is decided by three files, each
+answering one question, so **changing the rota never means touching launchd again**:
 
-The same page triggers scans by hand: **Run now** on any enabled board, and **Run what is due
-now**, which runs exactly what the timer would run at its next tick.
+| | |
+| --- | --- |
+| `config.yml` | *may* this source run at all |
+| `outputs/state/schedule.json` | *when* should it run |
+| `outputs/state/runs.json` | *when did* it last run |
+
+Edit the middle one on the Schedule page. Each row has two boxes and they mean different things:
+**Enabled** is `boards.<name>.enabled` — whether the source runs at all, for the timer, the terminal
+and "all enabled" alike — and **Scheduled** is the rota. A source that is scheduled but not enabled
+never runs.
+
+The same page files by hand: **Run now** on any enabled source, and **Run what is due now**, which
+asks the very question the timer asks rather than something that merely resembles it.
 
 A few behaviours worth knowing:
 
-- Three missed mornings produce one scan, not three.
-- A scan you started yourself counts — the schedule asks that a board be scanned, not that the
-  timer do it.
-- A failed scan waits for its next slot instead of retrying every ten minutes, which is the last
-  thing a board that has started blocking you needs.
-- The Schedule page and the overview say plainly when the agent is not loaded, because a
-  timetable nothing reads looks exactly like one that works.
+- A slot belongs to its own day. Three missed mornings produce one run, not three.
+- A run you started yourself counts — the rota asks that a source be scanned, not that the timer do it.
+- A *busy* run does not count, because it never asked the source anything. A *failed* one does: retrying every ten minutes is the worst possible response to a source that has begun blocking you.
 
-launchd rather than cron: the email board reads its Gmail password from the login keychain, which
-needs your session, and launchd runs a missed interval after the machine wakes.
+> [!NOTE]
+> launchd rather than cron: the email source reads its Gmail password from the login keychain,
+> which needs your session, and launchd runs a missed interval after the machine wakes where cron
+> simply skips it.
+
+## Sending leads downstream
+
+A report is everything a source showed; `ingest_jobspy.py` decides what is worth opening and appends
+it to the career-ops pipeline:
+
+```bash
+python reed_crawler/ingest_jobspy.py --latest email --dry-run   # print, write nothing
+python reed_crawler/ingest_jobspy.py --latest email
+```
+
+Relevance is defined downstream on purpose. It comes from **career-ops/portals.yml** — the same
+`title_filter` and `location_filter` its own scanner uses — so this project never holds a second
+opinion about which jobs matter. Rows already in `data/pipeline.md` or `data/scan-history.tsv` are
+skipped, as is one req posted to several cities.
+
+> [!IMPORTANT]
+> The downstream workspace is written to only when a person asks. `ingest_jobspy.py` is its sole
+> writer, reachable from the terminal or the Ingest page and never from the scheduler. A test
+> asserts nothing under it is modified.
 
 ## Docker
 
-`docker compose up -d` runs three containers built from one image:
-
-```bash
-cp config.example.yml config.yml       # compose mounts it; the image never bakes it in
-docker compose up -d --build
-open http://127.0.0.1:8080
 ```
-
-```
-timer     ──POST /scan-due──▶  runner  ──spawns──▶  crawls
+timer     ──POST /scan-due──▶  runner  ──spawns──▶  the sources
 dashboard ──POST /scan/…────▶  runner
 dashboard ──reads outputs/──▶  history, status, live logs
 ```
 
-**The runner** is the only thing that starts a scan, and it has no published port — every one of
-its endpoints begins a crawl, so it is reachable from the compose network and nowhere else.
-**The dashboard** asks it (`RUNNER_URL`) instead of spawning, and keeps reading `outputs/`
-directly for everything else. **The timer** is four lines of `curl` in a loop; it needs no Docker
-socket and no privileges, because triggering a scan is now an HTTP request rather than a process
-to spawn. Point ofelia, a host cron, or a Kubernetes CronJob at `POST /scan-due` instead and
-nothing else changes.
+**The runner** is the only thing that starts a run, and it has no published port — every one of its
+endpoints begins a crawl, so it is reachable from the compose network and nowhere else. **The
+dashboard** asks it (`RUNNER_URL`) instead of spawning, and keeps reading `outputs/` directly for
+everything else. **The timer** is four lines of `curl` in a loop; it needs no Docker socket and no
+privileges, because triggering a run is an HTTP request rather than a process to spawn. Point
+ofelia, a host cron, or a Kubernetes CronJob at `POST /scan-due` instead and nothing else changes.
 
-Both services mount three things, and the distinction matters:
+### Why only one runner
+
+`scan_lock` decides whether a source is already being scanned by signalling the pid that wrote the
+lock. That answer is only true inside the namespace owning the pid, so two containers that both
+spawn runs would each read the other's live lock as stale and scan the same source twice — doubling
+the request rate that every delay in the collector exists to avoid. One spawner keeps the lock
+honest; everyone else asks it.
+
+Following a run needs no such care. The run record and the log are files under `outputs/`, so the
+dashboard streams a run it did not start straight off the shared volume.
+
+> [!CAUTION]
+> Do not run the containers and a native install against one `outputs/`. A container pid means
+> nothing to a native process, so both would scan the same source at once.
+
+### Volumes
 
 ```yaml
     volumes:
-      - ./outputs:/app/outputs      # data — everything a scan produces
+      - ./outputs:/app/outputs      # data — everything a run produces
       - ./config.yml:/app/config.yml
       - .:/app                      # convenience — the checkout over the image's copy
 ```
 
-`outputs/` is **never copied into the image** (`.dockerignore` skips it). Every report, raw
-capture, run record, lock and log is written straight through to the checkout, so the containers
-hold no state of their own and can be destroyed and rebuilt without losing a scan.
+`outputs/` is **never copied into the image** (`.dockerignore` skips it). Every report, raw capture,
+run record, lock and log is written straight through to the checkout, so the containers hold no
+state of their own and can be destroyed and rebuilt without losing a run.
 
-The third line is separate on purpose. It puts the working tree over the image's copy of the
-source, so editing a board pipeline takes a `docker compose restart <service>` rather than a
-rebuild — but it also means the running container is no longer what the image says it is. Delete
-that one line to run the image exactly as built; the two data mounts above are what must stay.
+The third line is separate on purpose. It puts the working tree over the image's copy of the source,
+so editing a collector takes a `docker compose restart <service>` rather than a rebuild — but the
+running container is then no longer what the image says it is. Delete that one line to run the image
+exactly as built; the two data mounts above are what must stay.
 
 One `Dockerfile`, two targets. Both share every Python dependency; they differ only in Chromium,
 which the runner needs and the dashboard never launches — 2.38GB for the runner against 996MB for
-the dashboard, and the shared layers are stored once. Chromium is installed before any source is
+the dashboard, with the shared layers stored once. Chromium is installed before any source is
 copied, so editing code rebuilds only the last layer of each target.
 
-### Why the runner is separate, and why only one of it
+### The email source in a container
 
-`scan_lock` decides whether a board is already being scanned by signalling the pid that wrote the
-lock. That answer is only true inside the namespace owning the pid, so two containers that both
-spawn scans would each read the other's live lock as stale and scan the same board twice —
-doubling the request rate that every delay in the crawler exists to avoid. One spawner keeps the
-lock honest; everyone else asks it.
-
-Following a scan needs no such care. The run record and the log are files under `outputs/`, so
-the dashboard streams a scan it did not start straight off the shared volume.
-
-### The rest
-
-- **The published port binds `127.0.0.1` on the host.** The dashboard can start scans, so it must
-  not be reachable from the network. Inside the container it listens on `0.0.0.0`
-  (`DASHBOARD_HOST`) because a container's own loopback is reachable by nothing; the port
-  publication is what keeps it private. Changing it to `8080:8080` puts a scan trigger on your LAN.
-- **`JOB_CRAWLER_TIMER` names the timer.** Without it the Schedule page looks for launchd, does
-  not find it, and warns that nothing is reading the timetable.
-- **`install_timer.py` is for a Mac** running the project natively. It has nothing to do with this.
-- **Natively there is no runner.** With `RUNNER_URL` unset the dashboard starts scans in-process,
-  exactly as before — one process, one terminal. Both paths end in the same code; only the
-  transport differs.
-
-### The email board in a container
-
-It works, but it needs the one thing a container cannot inherit from macOS: your keychain.
-Natively `himalaya` reads the Gmail app password with `security find-generic-password`, which
-needs an unlocked GUI session. The runner image carries a Linux `himalaya` and reads the password
-from a file instead:
+It works, but it needs the one thing a container cannot inherit from macOS: your keychain. The
+runner image carries a Linux `himalaya` and reads the password from a file instead:
 
 ```bash
 mkdir -p secrets
@@ -354,16 +408,17 @@ security find-generic-password -a YOU@gmail.com -s himalaya-gmail-app-password -
 chmod 600 secrets/config.toml secrets/password
 ```
 
-`./secrets` is mounted read-only at `/run/himalaya`, `HIMALAYA_CONFIG` points at it, and both
-files are gitignored and excluded from the build context — nothing is baked into the image, and
-nothing is passed as an environment variable, which `docker inspect` would print.
+`./secrets` is mounted read-only at `/run/himalaya`, `HIMALAYA_CONFIG` points at it, and both files
+are gitignored and excluded from the build context — nothing is baked into the image, and nothing is
+passed as an environment variable, which `docker inspect` would print.
 
-**That app password is full IMAP and SMTP access to the whole account**, not scoped to the job
-labels. In the keychain it needs your session to read; in a file it does not. Treat the machine
-holding `secrets/` accordingly, and revoke the password at myaccount.google.com if it is ever
-shared or exposed.
+> [!CAUTION]
+> A Gmail app password is full IMAP and SMTP access to the whole account, not scoped to the job
+> labels. In the keychain it needs your session to read; in a file it does not. Treat the machine
+> holding `secrets/` accordingly, and revoke the password at myaccount.google.com if it is ever
+> exposed.
 
-Without those files the board fails at scan time with himalaya's own error and the other six are
+Without those files the source fails at run time with himalaya's own error and the other six are
 unaffected — the container still starts.
 
 ### The downstream workspace
@@ -375,47 +430,62 @@ unaffected — the container still starts.
 ```
 
 with `CAREER_OPS_WORKSPACE=/workspace/career-ops` naming it inside. Set `CAREER_OPS_DIR` if your
-checkout is not a sibling of this one. Without the mount, `/ingest` reports no workspace
-configured — the container was looking for a sibling of `/app`.
+checkout is not a sibling of this one.
 
 It is mounted on the **dashboard and not the runner**, which makes the rule that no schedule may
 write downstream a physical fact rather than a convention: the container that scans cannot reach
-`pipeline.md` at all, however a scan is triggered.
+`pipeline.md` at all, however a run is triggered.
 
-Podman works too — `podman-compose up -d` — with no changes to the compose file.
+### The rest
+
+- **The published port binds `127.0.0.1`.** Inside the container the dashboard listens on `0.0.0.0` (`DASHBOARD_HOST`) because a container's own loopback is reachable by nothing; the port publication is what keeps it private. Changing it to `8080:8080` puts a run trigger on your LAN.
+- **`JOB_CRAWLER_TIMER` names the timer.** Without it the Schedule page looks for launchd, does not find it, and warns that nothing is reading the rota.
+- **Natively there is no runner.** With `RUNNER_URL` unset the dashboard starts runs in-process, exactly as before. Both paths end in the same code; only the transport differs.
+- **Podman works too** — `podman-compose up -d` — with no changes to the compose file.
 
 ## Outputs
 
 Everything runtime lands under `outputs/`, which is gitignored:
 
 ```
-outputs/<board>/raw/        page captures, one set per run
-outputs/<board>/reports/    timestamped JSON per stage
-outputs/state/locks/        which board is being scanned
-outputs/state/runs.json     scans started from the dashboard
-outputs/state/logs/         their output
+outputs/<source>/raw/        page captures, one set per run
+outputs/<source>/reports/    timestamped JSON per stage
+outputs/state/locks/         which source is being scanned
+outputs/state/runs.json      every run, whatever started it
+outputs/state/logs/          their output
+outputs/state/schedule.json  the rota
 ```
 
-Captures carry the run stamp, so scans accumulate rather than overwrite, and a capture can be matched to the report written beside it. When a parser starts returning nothing — usually a board changing its markup — those captures are what you diff.
+Report filenames are a contract: `<source>_<stage>_<YYYY-MM-DD>_<HHMMSS>.json`. Captures carry the
+run stamp, so runs accumulate rather than overwrite, and a capture can be matched to the report
+written beside it. When a parser starts returning nothing — usually a site changing its markup —
+those captures are what you diff.
 
 ## Testing
 
 ```bash
-python -m pytest                          # ~150 tests, no network required
-python -m py_compile reed_crawler/*.py dashboard/*.py
+python -m pytest                          # 299 tests, no network required
+python -m py_compile reed_crawler/*.py dashboard/*.py runner/*.py
 ```
 
 > [!NOTE]
-> Tests assert against `config.example.yml`, not your personal `config.yml`. Adding a config key means adding it to both.
+> Tests assert against `config.example.yml`, not your personal `config.yml`. Adding a config key
+> means adding it to both.
 
 ## Troubleshooting
 
-**A scan reports `empty-body`.** The fetch succeeded but the page had nothing in it — usually transient, occasionally a block. The capture is still written; check it for a consent wall or a CAPTCHA. If every search in a run does this, the run exits non-zero.
+**A run reports `empty-body`.** The fetch succeeded but the page had nothing in it — usually
+transient, occasionally a block. The capture is still written; check it for a consent wall or a
+CAPTCHA. If every search in a run does this, the run exits non-zero.
 
-**A scan exits 75.** The board is already being scanned, by the cron, a terminal or the dashboard. Nothing is wrong; wait for the other one.
+**A run exits 75.** The source is already being scanned, by the timer, a terminal or the dashboard.
+Nothing is wrong; wait for the other one.
 
-**A board returns zero jobs with a healthy page.** The parser needs updating for changed markup. Diff the newest capture in `outputs/<board>/raw/` against an older one.
+**A source returns zero jobs with a healthy page.** The parser needs updating for changed markup.
+Diff the newest capture in `outputs/<source>/raw/` against an older one.
 
-**Crawls hang.** Run `crawl4ai-doctor`, then set `crawl.headless: false` to watch the browser and see where it stalls.
+**Crawls hang.** Run `crawl4ai-doctor`, then set `crawl.headless: false` to watch the browser and
+see where it stalls.
 
-The `probe_*.py` scripts are standalone single-URL crawls for testing a board in isolation. Modules marked `SUNSET` at the top are kept for reference and are not wired to anything.
+The `probe_*.py` scripts are standalone single-URL crawls for testing a source in isolation. Modules
+marked `SUNSET` at the top are kept for reference and are not wired to anything.

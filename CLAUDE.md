@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+The project is presented to users as **Job Newsroom** — the dashboard header, page titles and the
+README all use that name. Internally nothing was renamed: the directory is still `reed_crawler/`,
+the config key is still `boards:`, `outputs/<board>/` is still the layout on disk, and the GitHub
+repo is still `mike623/job-board-crawler`. Read "board" and "source" as the same thing; write
+"board" in code and "source" in user-facing copy.
+
 ## Commands
 
 Scripts run as file paths from the repo root using the venv interpreter (not `python -m`, no console scripts). The dashboard is the exception — it is a package.

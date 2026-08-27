@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set nav = 'jobs' %}
-{% block title %}Jobs — Job Board Crawler{% endblock %}
+{% block title %}Jobs — Job Newsroom{% endblock %}
 
 {% macro pay(job) %}
   {%- if job.fields.salary_min and job.fields.salary_max and job.fields.salary_min != job.fields.salary_max -%}

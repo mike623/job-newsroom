@@ -36,7 +36,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Job Board Crawler", docs_url=None, redoc_url=None, lifespan=lifespan)
+app = FastAPI(title="Job Newsroom", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 CSV_COLUMNS = [
