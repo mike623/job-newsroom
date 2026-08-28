@@ -20,7 +20,8 @@ PIPELINE = """\
 - [ ] https://uk.talent.com/view?id=611275213865225891 | Kerridge
 - [ ] https://www.adzuna.co.uk/jobs/details/5843030543?utm_medium=api | Adzuna direct link
 - [x] https://www.adzuna.co.uk/jobs/land/ad/5841506270?se=x&utm_medium=api | Adzuna click wrapper
-- [ ] https://www.linkedin.com/jobs/view/4271234567 | not one of our boards
+- [ ] https://www.linkedin.com/jobs/view/4271234567 | found by the board and forwarded by mail
+- [ ] https://www.glassdoor.co.uk/job-listing/JV_KO0,9_KE10,20.htm?jl=1009 | not one of our boards
 - [ ] a note with no link at all
 
 ## Processed
@@ -58,8 +59,20 @@ def test_a_ticked_entry_counts_as_actioned(workspace):
 def test_entries_for_other_sources_do_not_collide_with_our_boards(workspace):
     statuses = pipeline.load(workspace)
 
-    assert not any(board in aggregate.BOARDS and job_id == "4271234567"
-                   for board, job_id in statuses)
+    assert not any(board in aggregate.BOARDS for board, job_id in statuses if "1009" in job_id)
+
+
+def test_a_linkedin_posting_is_recognised_for_both_boards_that_can_find_it(workspace):
+    """The LinkedIn board searches for postings the email board also receives as alerts.
+
+    Both rows are real — the same advert genuinely appears under two boards — so a pipeline
+    entry has to satisfy both, or the job reads as actioned on one board and untouched on the
+    other. The two ids are derived independently and have to agree on the posting.
+    """
+    statuses = pipeline.load(workspace)
+
+    assert ("linkedin", "4271234567") in statuses
+    assert ("email", "linkedin-4271234567") in statuses
 
 
 def test_a_job_listed_twice_counts_as_actioned_if_either_entry_is_ticked(tmp_path):

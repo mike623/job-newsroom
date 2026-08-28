@@ -35,7 +35,7 @@ def test_scan_entrypoints_stamp_their_raw_captures() -> None:
     # Guards the regression this fixes: a capture path built without the run stamp silently
     # overwrites the previous scan's evidence for that search.
     for name in ["run_reed_scan.py", "totaljobs_pipeline.py", "talent_pipeline.py", "indeed_pipeline.py",
-                 "adzuna_pipeline.py", "haystack_pipeline.py"]:
+                 "adzuna_pipeline.py", "haystack_pipeline.py", "linkedin_pipeline.py"]:
         source = (ROOT / "reed_crawler" / name).read_text(encoding="utf-8")
         writes = re.findall(r"\(RAW / f\"\{(\w+)\}\.\w+\"\)", source)
         assert writes, f"{name}: found no raw capture writes to check"

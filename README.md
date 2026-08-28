@@ -24,7 +24,7 @@ docker compose up -d --build     # http://127.0.0.1:8080
 
 ## What you get
 
-- **Seven sources, one config.** Reed, Totaljobs, Indeed, Talent.com, Adzuna, Haystack and your Gmail alert labels, all driven from a single `config.yml`.
+- **Eight sources, one config.** Reed, Totaljobs, Indeed, Talent.com, Adzuna, Haystack, LinkedIn and your Gmail alert labels, all driven from a single `config.yml`.
 - **One story per job.** Every job appears once, with when it was first and last seen and how many editions have carried it.
 - **Deduped across sources.** The same posting arriving as a Totaljobs magic link, a LinkedIn tracker and an Indeed click wrapper is one row, not four.
 - **Structured pay.** Free text like `£70k - 85k per year` becomes a sortable minimum, maximum and period.
@@ -179,9 +179,10 @@ python reed_crawler/board_config.py
 | **Talent.com** | Markdown cards | Needs a seed result `id` to hydrate — see below |
 | **Haystack** | HTML | A client-rendered SPA; fields are anchored on their icons — see below |
 | **Adzuna** | JSON API | Not crawled at all: the site 403s every bot. Needs free API credentials |
+| **LinkedIn** | Guest endpoint | Not crawled at all: an unauthenticated HTML fragment — see below |
 | **Email** | Gmail labels | Not crawled at all: reads the alert mail the sources already send |
 
-Three of the seven are not crawls, and that is the interesting part.
+Four of the eight are not crawls, and that is the interesting part.
 
 ### Adzuna reads an API
 
@@ -203,6 +204,33 @@ boards:
 Credentials are attached at request time only, so no capture, report or log line ever contains the
 key. Pay arrives as numbers rather than advertiser prose — where `salary_is_predicted` is set, the
 figure is Adzuna's own estimate and says so.
+
+### LinkedIn reads a guest endpoint
+
+LinkedIn publishes no job-search API you can get a key for, and its logged-in search does not
+welcome automation. It does answer one URL unauthenticated —
+`/jobs-guest/jobs/api/seeMoreJobPostings/search` — with a plain HTML fragment of result cards. No
+login, no JavaScript, no browser.
+
+```yaml
+boards:
+  linkedin:
+    enabled: true
+    distance: 30           # miles
+    max_age_days: 7        # without this, page one carries adverts eight months old
+    pages_per_search: 2    # ten cards a page
+```
+
+Off by default on purpose: the endpoint throttles by IP, and being blocked here also costs you the
+LinkedIn alert mail the email source reads. Keep `delay_seconds` generous.
+
+The endpoint's parameters, its paging rule and the card selectors are adapted from
+[JobSpy](https://github.com/speedyapply/JobSpy) (MIT) and vendored rather than imported — the forty
+lines that encode what LinkedIn does are worth having; its pandas-shaped model layer is not.
+
+UK cards state no salary, so that column stays empty here. The same posting often arrives twice —
+once from this source, once as a LinkedIn alert mail — and both are kept, because they are two
+genuine sightings of one advert.
 
 ### Email reads your mailbox
 

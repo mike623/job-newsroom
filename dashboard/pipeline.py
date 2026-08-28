@@ -38,6 +38,11 @@ _IDENTIFIERS = [
     # Haystack ids are UUIDs, so the hyphen-delimited "local:jds/<board>-<id>-" shape below
     # cannot recover one; the URL is what identifies a Haystack advert.
     ("haystack", re.compile(r"haystack\.cv/jobs/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")),
+    # The same posting reaches the pipeline from two boards: the LinkedIn board finds it,
+    # and a LinkedIn alert mail forwards it. Both rows are real, so both are recognised —
+    # this line answers for the "linkedin" board, email_pipeline.job_id_from_url below for
+    # the "email" one.
+    ("linkedin", re.compile(r"linkedin\.com/jobs/view/(\d+)")),
 ]
 _LOCAL_IMPORT = re.compile(r"local:jds/([a-z]+)-([^-\s]+)-")
 _URL = re.compile(r"https?://[^\s|]+")

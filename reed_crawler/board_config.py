@@ -19,6 +19,11 @@ BASE_HAYSTACK = "https://haystack.cv"
 # is read from Adzuna's JSON API. Credentials are attached by the pipeline at request time,
 # never here — these URLs are printed, captured and logged.
 BASE_ADZUNA = "https://api.adzuna.com/v1/api/jobs/gb/search"
+# LinkedIn publishes no job-search API — Talent Solutions is partner-gated — but its guest
+# endpoint answers an unauthenticated GET with a plain HTML fragment of result cards. No
+# auth, no JavaScript, no browser: linkedin_pipeline fetches this the way adzuna_pipeline
+# fetches its API. The endpoint pages ten cards at a time via `start`.
+BASE_LINKEDIN = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 
 
 def slug_text(s: str) -> str:
@@ -141,6 +146,24 @@ def adzuna_search_url(title: str, location: str, distance: int, results_per_page
     return f"{BASE_ADZUNA}/{page}?{params}"
 
 
+def linkedin_search_url(title: str, location: str, distance: int, max_age_days: int = 0, start: int = 0) -> str:
+    """One page of LinkedIn guest search results.
+
+    `f_TPR=r<seconds>` is the freshness filter, and it is not optional: an unfiltered first
+    page was observed carrying adverts over eight months old alongside today's.
+    """
+    params = {
+        "keywords": title,
+        "location": location,
+        "distance": distance,          # miles from `location`
+        "pageNum": 0,
+        "start": start,
+    }
+    if max_age_days:
+        params["f_TPR"] = f"r{int(max_age_days) * 86400}"
+    return f"{BASE_LINKEDIN}?{urlencode(params)}"
+
+
 def talent_search_url(keyword: str, location: str, result_id: str = "") -> str:
     url = f"{BASE_TALENT}/jobs?k={quote_plus(keyword)}&l={quote_plus(location)}"
     if result_id:
@@ -192,6 +215,9 @@ def build_board_urls(cfg: dict, board: str) -> list[dict]:
                 url = talent_search_url(title, location)
             elif board == "haystack":
                 url = haystack_search_url(title, location)
+            elif board == "linkedin":
+                url = linkedin_search_url(title, location, int(board_cfg.get("distance", 30)),
+                                          int(board_cfg.get("max_age_days", 0)))
             elif board == "adzuna":
                 url = adzuna_search_url(title, location, int(board_cfg.get("distance", 30)),
                                         int(board_cfg.get("results_per_page", 50)))

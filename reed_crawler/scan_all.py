@@ -29,6 +29,7 @@ COMMANDS = {
     "talent": ["reed_crawler/talent_pipeline.py", "scan", "--config", "config.yml"],
     "indeed": ["reed_crawler/indeed_pipeline.py", "scan", "--config", "config.yml"],
     "adzuna": ["reed_crawler/adzuna_pipeline.py", "scan", "--config", "config.yml"],
+    "linkedin": ["reed_crawler/linkedin_pipeline.py", "scan", "--config", "config.yml"],
     "haystack": ["reed_crawler/haystack_pipeline.py", "scan", "--config", "config.yml"],
     "email": ["reed_crawler/email_pipeline.py", "scan", "--config", "config.yml"],
 }

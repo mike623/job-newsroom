@@ -105,6 +105,23 @@ boards:
     results_per_page: 50   # the API's maximum
     max_pages_per_run: 4
 
+  linkedin:
+    # Read from LinkedIn's unauthenticated guest endpoint, not by crawling: there is no
+    # public job-search API, and logged-in search is hostile to automation. The endpoint
+    # returns ten cards per page and refuses to page past start=1000.
+    # Off by default — an unauthenticated endpoint throttles by IP, and a block here also
+    # costs you the LinkedIn alert mail the email board reads.
+    enabled: false
+    title_groups:
+      - primary
+    location_groups:
+      - core
+    distance: 30           # miles from the location
+    max_age_days: 7        # f_TPR freshness filter; without it page one carries stale adverts
+    pages_per_search: 2    # ten cards a page, so 2 is ~20 leads per search
+    max_pages_per_run: 4   # cap on the number of searches, as elsewhere
+    delay_seconds: 60
+
   talent:
     # Very low-volume Talent.com search-card discovery.
     # Talent.com can return an unhydrated shell for /jobs?k=...&l=...; supplying a

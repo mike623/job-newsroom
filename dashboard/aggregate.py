@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUTS = ROOT / "outputs"
-BOARDS = ["reed", "totaljobs", "indeed", "talent", "adzuna", "haystack", "email"]
+BOARDS = ["reed", "totaljobs", "indeed", "talent", "adzuna", "haystack", "linkedin", "email"]
 
 _STAMP = re.compile(r"_(\d{4}-\d{2}-\d{2}_\d{6})\.json$")
 

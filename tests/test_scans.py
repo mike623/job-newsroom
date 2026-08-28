@@ -173,7 +173,8 @@ def client():
 
 def test_only_scanning_is_exposed():
     # Enriching and exporting write outside this project; they stay at the terminal.
-    assert set(scans.COMMANDS) == {"reed", "totaljobs", "talent", "indeed", "adzuna", "haystack", "email"}
+    assert set(scans.COMMANDS) == {"reed", "totaljobs", "talent", "indeed", "adzuna", "haystack",
+                                   "linkedin", "email"}
     for argv in scans.COMMANDS.values():
         assert "enrich" not in argv and "export" not in argv and "run" not in argv
 
