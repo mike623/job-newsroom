@@ -34,6 +34,7 @@ class Job:
     times_seen: int
     fields: dict = field(default_factory=dict)
     pipeline: object = None  # set by dashboard.pipeline.annotate when the workspace exists
+    ingest_skip: str = ""    # set by dashboard.pipeline.annotate_relevance; why ingest would drop it
 
     def get(self, name, default=""):
         return self.fields.get(name) or default

@@ -157,3 +157,40 @@ def test_the_entry_states_the_id_it_was_filed_under(base, tmp_path):
     line = [l for l in (base / "data" / "pipeline.md").read_text(encoding="utf-8").splitlines()
             if "pagead" in l][0]
     assert "| job_id=email-indeed-9f8e7d6c5b4a |" in line
+
+
+def test_dashboard_skip_reasons_match_what_ingest_drops(base, tmp_path, monkeypatch):
+    """The list's red rows and the ingest's drops are one verdict, not two.
+
+    `dashboard.pipeline.skip_reason` previews the filter by importing it. If it ever
+    restated the rules instead, the page would confidently mislabel jobs.
+    """
+    sys.path.insert(0, str(ROOT / "dashboard"))
+    import pipeline as dashboard_pipeline
+
+    rows = [
+        lead(role_title="Senior Software Engineer", url="https://example.com/keep"),
+        lead(role_title="Junior Software Engineer", url="https://example.com/junior"),
+        lead(role_title="Software Developer", url="https://example.com/nomatch"),
+        lead(role_title="Platform Engineer", location="Bengaluru, India", url="https://example.com/blocked"),
+        lead(role_title="Platform Engineer", posted="2025-01-01", url="https://example.com/stale"),
+    ]
+    rules = ingest_jobspy.load_filters(base)
+    kept = {r["url"] for r in ingest_jobspy.ingest(report(tmp_path, rows), base, dry_run=True)}
+
+    class FakeJob:
+        def __init__(self, row):
+            self.role_title = row["role_title"]
+            self.fields = row
+
+        def get(self, name, default=""):
+            return self.fields.get(name) or default
+
+    for row in rows:
+        reason = dashboard_pipeline.skip_reason(FakeJob(row), rules)
+        assert bool(reason) == (row["url"] not in kept), (row["url"], reason)
+
+    assert dashboard_pipeline.skip_reason(FakeJob(rows[1]), rules) == "title: “junior”"
+    assert dashboard_pipeline.skip_reason(FakeJob(rows[2]), rules) == "title: no match"
+    assert dashboard_pipeline.skip_reason(FakeJob(rows[3]), rules) == "location: “india”"
+    assert dashboard_pipeline.skip_reason(FakeJob(rows[4]), rules).startswith("posted >")

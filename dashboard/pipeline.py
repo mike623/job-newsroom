@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "reed_crawler"))
 
 import email_pipeline
+import ingest_jobspy
 
 _ENTRY = re.compile(r"^-\s*\[(?P<tick>[ xX])\](?P<body>.*)$", re.M)
 
@@ -128,3 +129,46 @@ def annotate(jobs, statuses: dict[tuple[str, str], Status]) -> None:
     """Attach downstream status to each job, in place."""
     for job in jobs:
         job.pipeline = statuses.get((job.board, job.job_id), ABSENT)
+
+
+def relevance(root: Path | None = None):
+    """portals.yml's definition of a relevant job, or None when it is unreadable.
+
+    The rules are imported from `ingest_jobspy` rather than restated here, so a job the
+    list marks "would be skipped" is exactly the job the ingest actually drops.
+    """
+    base = root if root is not None else workspace()
+    if base is None:
+        return None
+    try:
+        return ingest_jobspy.load_filters(base)
+    except (SystemExit, OSError, yaml.YAMLError):
+        return None
+
+
+def skip_reason(job, rules) -> str:
+    """Why `ingest_jobspy` would drop this job, or "" when it would keep it.
+
+    Only the reasons that are a property of the job itself. "Already known" and "same req"
+    depend on what the pipeline already holds and on the rest of the report, and the
+    Pipeline column already says the first of those.
+    """
+    title = job.role_title.lower()
+    negative = next((n for n in rules.negative if n in title), "")
+    if negative:
+        return f"title: “{negative}”"
+    if not any(p in title for p in rules.positive):
+        return "title: no match"
+    location = job.get("location")
+    if location and not rules.location_passes(location):
+        blocked = next((b for b in rules.block if b in location.lower()), "")
+        return f"location: “{blocked}”" if blocked else "location: not allowed"
+    if ingest_jobspy.stale(job.get("posted"), ingest_jobspy.DEFAULT_MAX_AGE_DAYS):
+        return f"posted >{ingest_jobspy.DEFAULT_MAX_AGE_DAYS}d"
+    return ""
+
+
+def annotate_relevance(jobs, rules) -> None:
+    """Attach the ingest's verdict to each job, in place."""
+    for job in jobs:
+        job.ingest_skip = "" if rules is None else skip_reason(job, rules)
