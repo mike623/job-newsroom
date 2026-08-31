@@ -54,6 +54,23 @@ Permanent
 Follow us https://x.com/totaljobs
 """
 
+HAYSTACK_ALERT = """\
+5 NEW JOBS MATCHING YOUR SEARCH
+
+\U0001f525 8 hours agoTechnology
+Principal Engineer \u2013 Product Safety
+
+\U0001f3e2 BAE Systems
+
+\U0001f4cd Bristol Area, United Kingdom \U0001f1ec\U0001f1e7  \u2022  \U0001f4b0 GBP 60,000/yr
+
+Apply Now \u2192
+https://haystack.cv/go?j=4c036fdf-76b6-42b9-a2f8-a79914c2e43a&s=searches-email&sub=SUBSCRIBER&u=https%3A%2F%2Fclick.appcast.io%2Ft%2Fblob&t=Principal%20Engineer&c=BAE%20Systems
+
+Browse All Jobs https://haystack.cv/jobs?src=searches-email
+Unsubscribe from these emails https://haystack.cv/unsubscribe?token=JWT
+"""
+
 
 def test_url_rules_keep_postings_and_drop_search_and_footer():
     assert email.allows_url("indeed", "https://uk.indeed.com/rc/clk?jk=abc123")
@@ -88,6 +105,26 @@ def test_job_id_is_provider_scoped_and_stable():
     hashed = email.job_id_for("jobright", "https://jobright.ai/jobs/info/xyz")
     assert hashed == email.job_id_for("jobright", "https://jobright.ai/jobs/info/xyz")
 
+WTTJ_ALERT = """\
+There are new jobs matching your search preferences, Namie!
+
+whiteworth
+
+lead generation and software for the real estate industry.
+
+  full-stack software engineer (long-term contract)
+ salary: \u00a385-101k
+ remote (within the uk) or london    (https://u9255466.ct.sendgrid.net/ls/click?upn=JOB1)
+
+metabase
+
+open-source business intelligence tool
+
+  engineering manager
+ salary above your minimum
+ london    (https://u9255466.ct.sendgrid.net/ls/click?upn=JOB2)    see all top matches (https://u9255466.ct.sendgrid.net/ls/click?upn=FOOTER)
+"""
+
 
 def leads_for(label, provider, subject, sender, body):
     envelope = {"id": "1", "subject": subject, "from": {"addr": sender}, "date": "2026-08-18 08:01+00:00"}
@@ -118,6 +155,63 @@ def test_linkedin_alert_reads_title_company_location():
     assert (leads[0].role_title, leads[0].company, leads[0].location) == \
         ("Staff Software Engineer", "Monzo", "London, England, United Kingdom")
     assert leads[0].url == "https://www.linkedin.com/jobs/view/4231567890"
+
+
+def test_haystack_alert_reads_the_emoji_labelled_card():
+    leads, template = leads_for("job/discovery/haystack", "haystack",
+                                "BAE Systems is hiring Principal Engineer \u2013 in Bristol Area",
+                                "alerts@alerts.haystack.cv", HAYSTACK_ALERT)
+    assert template == "haystack-alert"
+    assert len(leads) == 1                      # the browse and unsubscribe links are not jobs
+    assert (leads[0].role_title, leads[0].company, leads[0].location) == \
+        ("Principal Engineer \u2013 Product Safety", "BAE Systems", "Bristol Area, United Kingdom")
+
+
+def test_a_haystack_advert_has_one_id_however_it_was_linked():
+    """The board finds /jobs/<uuid>; a mail links /go?j=<uuid> with per-recipient parameters.
+
+    Both reduce to the advert, and the email board's id is the Haystack board's id with the
+    provider prefix — or a job actioned from a mail reads as untouched on the board.
+    """
+    import haystack_pipeline
+
+    mailed = "https://haystack.cv/go?j=4c036fdf-76b6-42b9-a2f8-a79914c2e43a&sub=ME&t=X"
+    listed = "https://haystack.cv/jobs/4c036fdf-76b6-42b9-a2f8-a79914c2e43a"
+
+    assert email.unwrap_magic_link(mailed) == listed
+    assert email.job_id_from_url(mailed) == email.job_id_from_url(listed)
+    assert email.job_id_from_url(listed) == f"haystack-{haystack_pipeline.haystack_job_id(listed)}"
+
+
+def test_welcometothejungle_alert_reads_the_card_above_the_link(monkeypatch):
+    """Its cards state pay on their own line, and the link ends the location line."""
+    destinations = {
+        "JOB1": "https://app.otta.com/jobs/ypGMjG1e?token=JWT&position=1",
+        "JOB2": "https://app.otta.com/jobs/IEweh3RS?token=JWT&position=2",
+        "FOOTER": "https://app.otta.com/account-settings/email-notifications?token=JWT",
+    }
+    monkeypatch.setattr(email, "_location", lambda url: destinations[url.split("upn=")[1]])
+    leads, template = leads_for("job/discovery/welcometothejungle", "welcometothejungle",
+                                "New match: Full-Stack Software Engineer at Whiteworth",
+                                "help@welcometothejungle.com", WTTJ_ALERT)
+    assert template == "welcometothejungle-alert"
+    # The settings link the footer wraps is not a job.
+    assert [(l.role_title, l.company, l.location, l.url, l.job_id) for l in leads] == [
+        ("full-stack software engineer (long-term contract)", "whiteworth",
+         "remote (within the uk) or london", "https://app.otta.com/jobs/ypGMjG1e",
+         "welcometothejungle-ypGMjG1e"),
+        ("engineering manager", "metabase", "london",
+         "https://app.otta.com/jobs/IEweh3RS", "welcometothejungle-IEweh3RS"),
+    ]
+
+
+def test_welcometothejungle_sign_in_token_is_stripped():
+    # The token in a job link signs this recipient in; kept, every mail would name a new job.
+    assert email.unwrap_magic_link("https://app.otta.com/jobs/ypGMjG1e?token=JWT&position=1") \
+        == "https://app.otta.com/jobs/ypGMjG1e"
+    assert email.allows_url("welcometothejungle", "https://app.otta.com/jobs/ypGMjG1e")
+    assert not email.allows_url("welcometothejungle",
+                                "https://app.otta.com/account-settings/email-notifications")
 
 
 def test_totaljobs_tracker_is_resolved_before_the_lead_is_kept(monkeypatch):

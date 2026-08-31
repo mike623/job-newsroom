@@ -156,6 +156,10 @@ boards:
         provider: totaljobs
       - label: job/discovery/jobright
         provider: jobright
+      - label: job/discovery/haystack
+        provider: haystack
+      - label: job/discovery/welcometothejungle
+        provider: welcometothejungle
 
 crawl:
   delay_seconds: 15              # Slow mode: wait between search pages.

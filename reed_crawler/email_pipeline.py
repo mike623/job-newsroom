@@ -57,6 +57,8 @@ DEFAULT_LABELS = [
     {"label": "job/discovery/linkedin", "provider": "linkedin"},
     {"label": "job/discovery/totaljobs", "provider": "totaljobs"},
     {"label": "job/discovery/jobright", "provider": "jobright"},
+    {"label": "job/discovery/haystack", "provider": "haystack"},
+    {"label": "job/discovery/welcometothejungle", "provider": "welcometothejungle"},
 ]
 
 PROVIDERS = {
@@ -65,7 +67,33 @@ PROVIDERS = {
     "totaljobs": {"board": "Totaljobs",
                   "sender": re.compile(r"@([\w.-]+\.)?(totaljobsmail|totaljobs|cwjobs)\.(com|co\.uk)$", re.I)},
     "jobright": {"board": "Jobright", "sender": re.compile(r"@([\w.-]+\.)?jobright\.ai$", re.I)},
+    "haystack": {"board": "Haystack", "sender": re.compile(r"@([\w.-]+\.)?haystack\.cv$", re.I)},
+    "welcometothejungle": {
+        "board": "Welcome to the Jungle",
+        "sender": re.compile(r"@([\w.-]+\.)?(welcometothejungle\.com|otta\.com)$", re.I)},
 }
+
+UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+HAYSTACK_JOB_PATH = re.compile(rf"^/jobs/({UUID})$", re.I)
+# Welcome to the Jungle serves its postings from Otta, the app it bought: /jobs/<id>.
+OTTA_JOB_PATH = re.compile(r"^/jobs/([\w-]+)$")
+
+
+def haystack_job_uuid(url: str) -> str:
+    """The advert's uuid, from either link shape Haystack uses.
+
+    Alert mail links every job as /go?j=<uuid>&sub=<subscriber>&u=<destination>: the uuid is
+    the advert, and everything around it is per-recipient. The search board links the same
+    advert as /jobs/<uuid>, which is the shape both are reduced to.
+    """
+    parts = urlsplit(url)
+    if not re.search(r"(^|\.)haystack\.cv$", host_of(url)):
+        return ""
+    if parts.path == "/go":
+        candidate = (parse_qs(parts.query).get("j") or [""])[0]
+        return candidate.lower() if re.fullmatch(UUID, candidate, re.I) else ""
+    found = HAYSTACK_JOB_PATH.match(parts.path)
+    return found.group(1).lower() if found else ""
 
 
 @dataclass
@@ -203,6 +231,18 @@ def allows_url(provider: str, url: str) -> bool:
     if provider == "jobright":
         return bool(re.search(r"(^|\.)jobright\.ai$", host) and "/jobs/info/" in path)
 
+    if provider == "haystack":
+        return bool(haystack_job_uuid(url))
+
+    if provider == "welcometothejungle":
+        # Every link in the mail is a SendGrid click tracker, jobs and footer alike; what one
+        # wraps is checked once it has been resolved.
+        if re.search(r"(^|\.)ct\.sendgrid\.net$", host):
+            return True
+        if re.search(r"(^|\.)otta\.com$", host):
+            return bool(OTTA_JOB_PATH.match(path))
+        return bool(re.search(r"(^|\.)welcometothejungle\.com$", host) and "/jobs/" in path)
+
     return False
 
 
@@ -210,6 +250,7 @@ def is_tracker(url: str) -> bool:
     """A click wrapper standing in front of a posting, rather than the posting itself."""
     host = host_of(url)
     return bool(re.search(r"(^|\.)totaljobsmail\.com$", host)
+                or re.search(r"(^|\.)ct\.sendgrid\.net$", host)
                 or (host == "cts.indeed.com" and url.split("?")[0].find("/v3/") > 0))
 
 
@@ -246,6 +287,14 @@ def unwrap_magic_link(url: str) -> str:
 
     if re.search(r"(^|\.)jobright\.ai$", host) and parts.path.startswith("/jobs/info/"):
         return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+    # app.otta.com/jobs/<id>?token=<JWT>&position=1 — the token signs the recipient in.
+    if re.search(r"(^|\.)otta\.com$", host) and OTTA_JOB_PATH.match(parts.path):
+        return f"https://app.otta.com{parts.path}"
+
+    haystack = haystack_job_uuid(url)
+    if haystack:
+        return f"https://haystack.cv/jobs/{haystack}"
 
     if re.search(r"(^|\.)linkedin\.com$", host):
         job = re.match(r"^/(?:comm/)?jobs/view/(\d+)", parts.path)
@@ -358,7 +407,14 @@ def job_id_for(provider: str, url: str, title: str = "", company: str = "") -> s
         "linkedin": r"/jobs/view/(\d+)",
         "totaljobs": r"/job/(\d+)",
         "jobright": r"/jobs/info/([\w-]+)",
+        "welcometothejungle": r"/jobs/([\w-]+)",
     }
+    if provider == "haystack":
+        # Both link shapes name the advert, and the uuid is the search board's own id for it,
+        # so a job actioned from a mail is recognised on the Haystack board too.
+        uuid = haystack_job_uuid(url)
+        if uuid:
+            return f"haystack-{uuid}"
     found = re.search(patterns[provider], parts.path) if provider in patterns else None
     if found:
         return f"{provider}-{found.group(1)}"
@@ -470,6 +526,40 @@ def jobright_alert(before, after, prefix) -> dict:
     }
 
 
+def haystack_alert(before, after, prefix) -> dict:
+    # "🔥 8 hours agoTechnology" / Title / "🏢 Company"
+    # / "📍 Location 🇬🇧  •  💰 pay" / "Apply Now →" / <url>.
+    # The emoji are the labels — the words around them are free text and the layout of a card
+    # is otherwise indistinguishable from the digest's own headings.
+    company_at = next((i for i, line in enumerate(before) if line.startswith("🏢")), -1)
+    if company_at < 0:
+        return {}
+    place = next((line for line in before[company_at + 1:] if line.startswith("📍")), "")
+    place = re.split(r"\s*[•|]", place.lstrip("📍 "))[0]
+    place = re.sub(r"[\U0001F1E6-\U0001F1FF]", "", place).strip().strip(",").strip()
+    return {"title": at(before, company_at - 1),
+            "company": before[company_at].lstrip("🏢 ").strip(),
+            "location": place}
+
+
+# "salary: £80-95k" and "salary above your minimum" — Welcome to the Jungle states pay on
+# its own line, which is what marks the end of a card.
+WTTJ_PAY = re.compile(r"^salary\b", re.I)
+
+
+def welcometothejungle_alert(before, after, prefix) -> dict:
+    # Company / what the company does / Title / "salary: ..." / "<location>  <url>".
+    # The link ends the location line, so the card is the block above it and the location is
+    # what precedes the link on the link's own line.
+    pay_at = next((i for i in range(len(before) - 1, -1, -1) if WTTJ_PAY.match(before[i])),
+                  len(before))
+    # The body writes the link in parentheses, so the "(" is the last thing before it.
+    place = re.sub(r"\s+", " ", str(prefix or "")).strip().rstrip("(").strip()
+    return {"title": at(before, pay_at - 1),
+            "company": at(before, pay_at - 3),
+            "location": place}
+
+
 # One template = one body layout, identified by a signature and read by an adaptor. Providers
 # ship several and change them without notice, so this matches on what the body says, not on
 # which label the mail arrived under. First matching signature wins; order matters only where
@@ -496,6 +586,11 @@ TEMPLATES = [
     {"id": "totaljobs-recommendation", "provider": "totaljobs",
      "signature": re.compile(r"We recommend this job for you", re.I),
      "adaptor": totaljobs_recommendation},
+    {"id": "haystack-alert", "provider": "haystack",
+     "signature": re.compile(r"NEW JOBS MATCHING YOUR SEARCH", re.I), "adaptor": haystack_alert},
+    {"id": "welcometothejungle-alert", "provider": "welcometothejungle",
+     "signature": re.compile(r"new jobs matching your search preferences", re.I),
+     "adaptor": welcometothejungle_alert},
     {"id": "jobright-alert", "provider": "jobright",
      "signature": re.compile(r"Jobright Instant Alert|curated to align with your preferences", re.I),
      "adaptor": jobright_alert},

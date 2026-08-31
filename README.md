@@ -257,8 +257,10 @@ provider's URL rules apply, because mail filed by hand lands under the wrong lab
 signature** picks the template that knows that sender's current layout.
 
 Per-recipient links are stripped before a lead is kept. Totaljobs wraps a posting in a magic-link
-JWT, LinkedIn and Jobright append per-email tracking, and Totaljobs digests link through
-`totaljobsmail.com` trackers resolved by reading `Location` headers only. Indeed's `cts.indeed.com`
+JWT, LinkedIn and Jobright append per-email tracking, Welcome to the Jungle signs the recipient
+in with a `?token=<JWT>` on the posting itself, and Totaljobs digests and every Welcome to the
+Jungle link go through trackers (`totaljobsmail.com`, `ct.sendgrid.net`) resolved by reading
+`Location` headers only. Indeed's `cts.indeed.com`
 wrappers are decoded locally — the destination is a gzipped blob inside the link, and Indeed blocks
 automated traffic hard. Untouched, one posting yields a different URL in every mail and dedup never
 fires.
