@@ -261,9 +261,19 @@ _ASCENDING = {"company", "role"}
 
 
 def select(jobs: list[Job], board: str = "", min_pay: int | None = None,
-           query: str = "", sort: str = "first_seen", actioned: str = "") -> list[Job]:
-    """Apply the filters and ordering the job list offers."""
+           query: str = "", sort: str = "first_seen", actioned: str = "",
+           skipped: bool = False) -> list[Job]:
+    """Apply the filters and ordering the job list offers.
+
+    Jobs the ingest would drop are hidden unless asked for. Most of what a board returns is
+    not a job worth opening — the point of the list is what is live and relevant, and burying
+    that under adverts portals.yml already rejects is what the filter preview was for.
+    `ingest_skip` is only set when the downstream workspace exists, so without one this hides
+    nothing.
+    """
     chosen = jobs
+    if not skipped:
+        chosen = [j for j in chosen if not j.ingest_skip]
     if actioned == "no":
         chosen = [j for j in chosen if not (j.pipeline and j.pipeline.present)]
     elif actioned == "yes":

@@ -58,16 +58,19 @@ def job_list(
     q: str = "",
     sort: str = Query("first_seen"),
     actioned: str = "",
+    skipped: bool = False,
 ):
     every, has_pipeline = _annotated_jobs()
     jobs = aggregate.select(every, board=board, min_pay=min_pay,
-                            query=q, sort=sort, actioned=actioned)
+                            query=q, sort=sort, actioned=actioned, skipped=skipped)
     return {
         "jobs": [serialise.job(j) for j in jobs],
         "boards": aggregate.BOARDS,
         "sorts": list(aggregate.SORTS),
         "shown": len(jobs),
         "total": len(every),
+        # What is being held back, so the checkbox can say how much it would reveal.
+        "hidden": 0 if skipped else sum(1 for j in every if j.ingest_skip),
         "has_pipeline": has_pipeline,
     }
 

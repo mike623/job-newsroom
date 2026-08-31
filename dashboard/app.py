@@ -64,7 +64,8 @@ CSV_COLUMNS = [
 
 @app.get("/export.csv")
 def export_csv(board: str = "", min_pay: int | None = None,
-               q: str = "", sort: str = "first_seen", actioned: str = ""):
+               q: str = "", sort: str = "first_seen", actioned: str = "",
+               skipped: bool = False):
     """The current filter, as a spreadsheet.
 
     A browser download rather than part of the API: the client links straight to it, so the
@@ -72,7 +73,7 @@ def export_csv(board: str = "", min_pay: int | None = None,
     """
     every, _ = api._annotated_jobs()
     jobs = aggregate.select(every, board=board, min_pay=min_pay,
-                            query=q, sort=sort, actioned=actioned)
+                            query=q, sort=sort, actioned=actioned, skipped=skipped)
 
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS, extrasaction="ignore")

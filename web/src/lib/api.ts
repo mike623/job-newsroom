@@ -111,6 +111,7 @@ export interface JobList {
   sorts: string[]
   shown: number
   total: number
+  hidden: number
   has_pipeline: boolean
 }
 

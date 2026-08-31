@@ -75,6 +75,16 @@ def test_name_sorts_run_a_to_z_while_the_rest_are_most_interesting_first():
     assert [j.job_id for j in aggregate.select(jobs, sort="company")] == ["a", "b"]
 
 
+def test_jobs_the_ingest_would_drop_are_hidden_until_asked_for():
+    """The list is for what is live and relevant; portals.yml has already rejected the rest."""
+    keep = make(job_id="keep")
+    drop = make(job_id="drop")
+    drop.ingest_skip = "title: no match"
+
+    assert [j.job_id for j in aggregate.select([keep, drop])] == ["keep"]
+    assert {j.job_id for j in aggregate.select([keep, drop], skipped=True)} == {"keep", "drop"}
+
+
 def test_an_unknown_sort_falls_back_rather_than_erroring():
     jobs = [make(job_id="a"), make(job_id="b")]
 
@@ -123,6 +133,17 @@ def test_csv_export_carries_the_structured_columns(client):
     assert rows, "expected at least one job in the export"
     for column in ("board", "job_id", "salary_min", "salary_max", "salary_period", "first_seen"):
         assert column in rows[0]
+
+
+def test_csv_export_hides_skipped_jobs_like_the_page_does(client):
+    # The page and the spreadsheet answer the same query string, or the download is a
+    # different list from the one you were looking at.
+    shown = client.get("/api/jobs").json()
+    with_skipped = client.get("/api/jobs?skipped=true").json()
+    exported = list(csv.DictReader(io.StringIO(client.get("/export.csv").text)))
+
+    assert len(exported) == shown["shown"] <= with_skipped["shown"]
+    assert shown["hidden"] == with_skipped["shown"] - shown["shown"]
 
 
 def test_csv_export_honours_the_active_filter(client):

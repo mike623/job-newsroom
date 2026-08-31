@@ -7,6 +7,7 @@ import { Empty, Failed, Loading, PageTitle } from "@/components/page"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -72,6 +73,8 @@ export default function JobsPage() {
   const board = params.get("board") ?? ""
   const actioned = params.get("actioned") ?? ""
   const sort = params.get("sort") ?? "first_seen"
+  // Jobs the ingest would drop are hidden by default; the server decides which those are.
+  const skipped = params.get("skipped") === "true"
 
   return (
     <>
@@ -157,6 +160,17 @@ export default function JobsPage() {
             </Select>
           </div>
 
+          {data?.has_pipeline ? (
+            <Label className="mb-2 flex items-center gap-2 font-normal text-muted-foreground">
+              <Checkbox
+                checked={skipped}
+                onCheckedChange={(on) => set("skipped", on === true ? "true" : "")}
+              />
+              Show skipped
+              {data.hidden ? <span className="tabular-nums">({data.hidden})</span> : null}
+            </Label>
+          ) : null}
+
           <Button
             variant="ghost"
             onClick={() => {
@@ -173,6 +187,7 @@ export default function JobsPage() {
         <span>
           {data ? plural(data.shown, "job") : "…"}
           {data && data.shown !== data.total ? ` of ${data.total}` : ""}
+          {data?.hidden ? ` · ${data.hidden} skipped, hidden` : ""}
         </span>
         <Button asChild variant="ghost" size="sm">
           <a href={`/export.csv?${search}`}>
