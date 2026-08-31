@@ -95,19 +95,19 @@ def test_an_empty_list_still_reports_one_page():
 # ---- route ----
 
 def test_the_run_log_renders_and_pages(client):
-    assert client.get("/runs").status_code == 200
+    assert client.get("/api/runs").status_code == 200
 
-    small = client.get("/runs?per_page=5")
+    small = client.get("/api/runs?per_page=5")
     assert small.status_code == 200
-    assert "scans recorded" in small.text
+    assert small.json()["per_page"] == 5 and small.json()["total"] > 5
 
 
 def test_no_page_loads_the_whole_history(client):
     # The point of paging: the history is already thousands of rows and grows daily.
-    body = client.get("/runs?per_page=5").text
+    body = client.get("/api/runs?per_page=5").json()
 
-    assert body.count("view jobs") + body.count("found nothing") <= 5
+    assert len(body["runs"]) == 5 and body["total"] > 5
 
 
 def test_an_absurd_per_page_is_capped(client):
-    assert client.get("/runs?per_page=100000").status_code == 200
+    assert client.get("/api/runs?per_page=100000").status_code == 200

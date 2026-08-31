@@ -1,5 +1,9 @@
 """Run the dashboard: `python -m dashboard`.
 
+Serves the API and the built client. The client is built separately — `cd web && npm run build`
+— and an unbuilt checkout is told so rather than being shown a blank page. For working on the
+client itself, `npm run dev` proxies its API back here.
+
 Binds to loopback by design. The service can start scans, so it must not be reachable from
 the network; --host is deliberately not exposed.
 
@@ -18,7 +22,7 @@ import uvicorn
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m dashboard", description=__doc__)
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--reload", action="store_true", help="restart on code and template changes")
+    parser.add_argument("--reload", action="store_true", help="restart on code changes")
     args = parser.parse_args()
 
     host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")

@@ -180,17 +180,17 @@ def test_only_scanning_is_exposed():
 
 
 def test_starting_an_unknown_board_is_a_404(client):
-    assert client.post("/scan/myspace").status_code == 404
+    assert client.post("/api/scan/myspace").status_code == 404
 
 
 def test_a_board_already_being_scanned_is_refused(client, isolated_state):
     write_records(isolated_state, [record(board="reed", status=scans.RUNNING)])
 
-    assert client.post("/scan/reed").status_code == 409
+    assert client.post("/api/scan/reed").status_code == 409
 
 
 def test_an_unknown_run_is_a_404(client):
-    assert client.get("/scan/nope").status_code == 404
+    assert client.get("/api/scan/nope").status_code == 404
 
 
 def test_the_stream_reports_an_unknown_run_rather_than_hanging(isolated_state):

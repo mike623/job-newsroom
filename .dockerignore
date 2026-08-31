@@ -12,3 +12,6 @@ __pycache__
 .omc
 .gstack
 .DS_Store
+# The client is built in its own stage; a host build must not be copied in over it.
+web/node_modules
+dashboard/static

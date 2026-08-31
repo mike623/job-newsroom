@@ -20,10 +20,13 @@ Scripts run as file paths from the repo root using the venv interpreter (not `py
 python3 -m venv .venv && . .venv/bin/activate && python -m pip install -r requirements.txt
 crawl4ai-doctor
 cp config.example.yml config.yml       # config.yml is gitignored
+cd web && npm install && npm run build && cd ..   # the dashboard's interface; required once
 
 # Dashboard
 .venv/bin/python -m dashboard                  # 127.0.0.1:8080
-.venv/bin/python -m dashboard --reload         # dev
+.venv/bin/python -m dashboard --reload         # dev, Python side only
+cd web && npm run dev                          # 5173, hot reload, proxies /api to 8080
+cd web && npm run build                        # rebuild dashboard/static/ after a UI change
 .venv/bin/python -m runner                     # 127.0.0.1:8081, only needed with RUNNER_URL set
 docker compose up -d --build                   # dashboard + runner + timer, 127.0.0.1:8080
 
@@ -64,8 +67,11 @@ config.yml → scan (per-board lock, jittered delays)
                └─ outputs/<board>/reports/<board>_deduped_<stamp>.json
                         │
                         ▼  re-read per request, no index, no cache
-                  dashboard  → / · /jobs · /jobs/<board>/<id> · /runs · /export.csv
-                             → POST /scan/<board>, /scan-all  (subprocess + SSE)
+              dashboard/api.py  → /api/overview · /api/jobs · /api/runs · /api/schedule · /api/ingest
+                                → POST /api/scan/<board>, /api/scan-all  (subprocess + SSE)
+                        │
+                        ▼  fetched by
+                     web/  →  React + shadcn/ui, built into dashboard/static/
 ```
 
 **Crawler modules.** `board_config.py` builds every board's URLs and owns `run_stamp`, `raw_capture_stem` and `jittered`. `salary.py` and `scan_lock.py` and `scan_health.py` are shared. Each board then has its own parsing: `reed_utils.py` + `run_reed_scan.py`, `totaljobs_pipeline.py`, `talent_pipeline.py`, `indeed_pipeline.py`, `adzuna_pipeline.py`, `haystack_pipeline.py`, `linkedin_pipeline.py`, `email_pipeline.py`.
@@ -78,7 +84,9 @@ config.yml → scan (per-board lock, jittered delays)
 
 **Haystack is HTML, not markdown.** Every other crawled board is parsed from crawl4ai's markdown. haystack.cv is a client-rendered SPA whose markdown runs a card's fields together with no separator, so `haystack_pipeline.py` parses the HTML with BeautifulSoup, anchored on the icon that labels each field (see Invariants). It is a `scan`-only module, like `talent_pipeline.py`.
 
-**Dashboard modules.** `aggregate.py` is the only place that reads report JSON — jobs, board summaries, runs, filtering and sorting. `pipeline.py` reads the downstream workspace. `app.py` is routes only; `templates/` extends `base.html`. `runner_client.py` carries a start request to the runner.
+**Dashboard modules.** `aggregate.py` is the only place that reads report JSON — jobs, board summaries, runs, filtering and sorting. `pipeline.py` reads the downstream workspace. `api.py` is every JSON route; `serialise.py` is the only place a response body is shaped, so a field gains a name once and the client's TypeScript types are written from it. `app.py` mounts that router, keeps `/export.csv` (a browser download, not an API call) and serves the built client. `runner_client.py` carries a start request to the runner.
+
+**The interface is a React application.** `web/` is Vite + React + TypeScript + Tailwind + shadcn/ui, built into `dashboard/static/`, which is gitignored — a checkout has no interface until `npm run build`, and the dashboard says so rather than serving a blank page. `web/src/routes/` is one file per page and `web/src/lib/api.ts` is the whole client-server contract. Data is fetched with TanStack Query; filters live in the URL, so a filtered job list is still a link you can paste. In Docker a `client` stage builds it and the dashboard image copies the result, so the runtime image carries no node.
 
 **Runner modules.** `runner/scans.py` runs scans as subprocesses and persists their records; `runner/pool.py` bounds concurrency; `runner/app.py` exposes both over HTTP. Starting and following a scan are split deliberately: **only one process may spawn scans**, because `scan_lock` proves a lock live by signalling the pid that wrote it and that answer is meaningless across PID namespaces — two spawners scan the same board twice. Following is a file read (`run_record`, the per-run log), so the dashboard imports `runner.scans` directly for history, status and the live log stream, and calls the API only to start something. With `RUNNER_URL` unset there is no separate runner and the dashboard spawns in-process, which is how the project runs natively.
 
@@ -100,6 +108,8 @@ Each of these was learned from a bug. Breaking one silently corrupts data or get
 - **LinkedIn pages ten at a time and stops at 1000.** JobSpy's `jobs_per_page = 25` is wrong for this endpoint; its `start += len(cards)` rule is what is correct, so paging advances by what actually arrived. LinkedIn refuses to page past `start=1000` whatever the result count claims, and a 429 or a 999 is a block — the search is abandoned rather than retried, because retrying a throttle is the one response guaranteed to make it worse.
 - **A LinkedIn search without `f_TPR` returns stale adverts.** An unfiltered first page was observed carrying postings over eight months old interleaved with the day's. `max_age_days` is what makes the board's output mean "recently posted", and it is not optional. LinkedIn's UK guest cards also state no pay at all — 0 of 20 in the first live scan — so an empty `salary` there is the board, not a parsing failure.
 - **The LinkedIn and Haystack boards find the same postings their alert mail forwards, and the ids must agree.** An alert mail forwards the same advert the board searches for, and `dashboard/pipeline.py` keys downstream status on `(board, job_id)`. Both rows are real and both are kept, but the LinkedIn board's bare id has to be the one `email_pipeline.job_id_for` derives from the same URL, minus its `linkedin-` prefix — otherwise a job actioned from a mail reads as untouched on the board. A test asserts the two agree.
+- **The client owns its URLs, and `/api` must never fall through to it.** Every path the API and the CSV did not claim returns `index.html`, because only the client knows what `/jobs/reed/123` means. An unknown `/api/…` path stays a 404: a failed fetch that reads as HTML is the kind of bug that takes an afternoon. A test asserts both, and that no OpenAPI schema comes back from `/docs`, `/redoc` or `/openapi.json` — the catch-all would happily answer those with a page.
+- **A page that throws says so.** The client wraps its routes in an error boundary keyed on the path. Without it a render error unmounts the whole application, which looks exactly like a server returning nothing — and sends you looking in the wrong half of the project.
 - **Report filenames are a contract.** `<board>_<stage>_<YYYY-MM-DD>_<HHMMSS>.json`. Stage discovery and every aggregation parse this shape.
 - **Haystack is parsed from HTML, not markdown.** haystack.cv renders a whole card as one link whose text concatenates title, company, location, salary and posted date with no separator, so markdown cannot recover the fields. `parse_search_cards` walks the HTML and anchors each field on the lucide icon that labels it (`lucide-building2` → company, `lucide-map-pin` → location, `lucide-banknote` → salary, `lucide-clock` → posted). The surrounding utility classes are generated and will churn; the icon names are the stable part.
 - **An empty Haystack scan can be the board, not the crawl.** Its search backend intermittently answers "Something went wrong loading jobs" on an otherwise healthy page; the scan retries once and then records zero leads. Its free-text `q` also matches loosely and appears to require every term, so multi-word titles return far fewer results than short ones. Pagination is a "Load More" button, so a scan sees only the first ~20 cards per search.

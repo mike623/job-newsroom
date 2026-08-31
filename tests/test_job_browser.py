@@ -100,16 +100,18 @@ def test_find_job_returns_nothing_for_an_unknown_id(tmp_path):
 
 # ---- routes ----
 
-def test_the_job_list_renders(client):
-    response = client.get("/jobs")
+def test_the_job_list_answers_with_the_filters_it_offers(client):
+    response = client.get("/api/jobs")
 
     assert response.status_code == 200
-    assert "download CSV" in response.text
+    body = response.json()
+    assert body["shown"] == len(body["jobs"])
+    assert body["sorts"] and body["boards"]
 
 
 def test_an_unknown_job_or_board_is_a_404(client):
-    assert client.get("/jobs/reed/definitely-not-a-job").status_code == 404
-    assert client.get("/jobs/notaboard/1").status_code == 404
+    assert client.get("/api/jobs/reed/definitely-not-a-job").status_code == 404
+    assert client.get("/api/jobs/notaboard/1").status_code == 404
 
 
 def test_csv_export_carries_the_structured_columns(client):

@@ -24,6 +24,10 @@ outputs/
 *.log
 .omc/
 
+# The dashboard's client: source in web/, build output served by the dashboard
+node_modules/
+dashboard/static/
+
 # OS/editor
 .DS_Store
 .idea/

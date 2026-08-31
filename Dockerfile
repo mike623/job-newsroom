@@ -29,9 +29,21 @@ tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen(url, timeout=180).read())
  && himalaya --version
 
 
-# Reads report files and renders them. No crawling, so no browser.
+# The interface. A React application, built once here so the runtime image carries no node —
+# the dashboard serves the bundle as static files and nothing else.
+FROM node:22-slim AS client
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+
+# Reads report files and serves them. No crawling, so no browser.
 FROM deps AS dashboard
 COPY . .
+# After the source, so the built client wins over anything a host build left behind.
+COPY --from=client /dashboard/static ./dashboard/static
 EXPOSE 8080
 CMD ["python", "-m", "dashboard"]
 

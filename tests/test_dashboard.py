@@ -76,16 +76,23 @@ def client():
     return TestClient(app)
 
 
-def test_the_landing_page_renders(client):
-    response = client.get("/")
+def test_the_overview_reports_every_board(client):
+    response = client.get("/api/overview")
 
     assert response.status_code == 200
-    body = response.text
-    assert "jobs known" in body
-    for board in aggregate.BOARDS:
-        assert board in body
+    body = response.json()
+    assert set(body["totals"]) == {"known", "new", "runs"}
+    assert [s["board"] for s in body["summaries"]] == aggregate.BOARDS
 
 
 def test_no_api_docs_are_exposed(client):
     # Nothing here is a public API; the schema endpoints are noise on a single-user tool.
-    assert client.get("/docs").status_code == 404
+    # They are not merely unrouted — the client's catch-all would answer with its index.html,
+    # so what matters is that no schema comes back.
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert "application/json" not in client.get(path).headers.get("content-type", "")
+
+
+def test_an_unknown_api_path_is_a_404_rather_than_the_client(client):
+    # A failed fetch that reads as HTML is the kind of bug that takes an afternoon.
+    assert client.get("/api/nothing-here").status_code == 404

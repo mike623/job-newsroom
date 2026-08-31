@@ -128,9 +128,17 @@ python -m pip install -r requirements.txt
 crawl4ai-doctor                        # installs and verifies the headless browser
 cp config.example.yml config.yml
 
+cd web && npm install && npm run build && cd ..   # the interface; Docker builds this for you
+
 python -m dashboard                    # http://127.0.0.1:8080
-python -m dashboard --reload           # restart on code and template changes
+python -m dashboard --reload           # restart on code changes
 ```
+
+The interface is a React application in `web/`, built into `dashboard/static/` and served by
+the dashboard itself — one process, one port, no node at runtime. It is not committed, so a
+fresh checkout needs that one `npm run build`; until then the dashboard says so instead of
+serving a blank page. Working on the interface, `npm run dev` gives hot reload on port 5173
+and proxies its API calls back to the dashboard.
 
 `config.yml` is gitignored — it holds your salary targets, locations and API credentials.
 

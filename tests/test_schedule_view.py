@@ -69,18 +69,18 @@ def saved(state) -> dict:
 # ---- the page ----
 
 def test_the_schedule_page_lists_every_scannable_board():
-    page = client.get("/schedule")
+    page = client.get("/api/schedule")
 
     assert page.status_code == 200
-    for board in ("reed", "totaljobs", "email"):
-        assert board in page.text
+    listed = {row["board"] for row in page.json()["rows"]}
+    assert {"reed", "totaljobs", "email"} <= listed
 
 
-def test_the_config_state_of_each_board_is_shown_as_a_box():
-    page = client.get("/schedule").text
+def test_the_config_state_of_each_board_is_reported():
+    rows = {row["board"]: row for row in client.get("/api/schedule").json()["rows"]}
 
-    assert 'name="reed.runnable" checked' in page       # enabled in config.yml
-    assert 'name="email.runnable" checked' not in page  # disabled there
+    assert rows["reed"]["runnable"] is True     # enabled in config.yml
+    assert rows["email"]["runnable"] is False   # disabled there
 
 
 def test_a_container_names_its_own_timer_rather_than_warning_about_launchd(monkeypatch):
@@ -98,46 +98,44 @@ def test_the_page_says_plainly_when_no_timer_will_read_the_schedule(monkeypatch)
     monkeypatch.delenv("JOB_CRAWLER_TIMER", raising=False)
     monkeypatch.setattr(schedule_view.install_timer, "is_loaded", lambda: False)
 
-    assert "Nothing is reading this timetable" in client.get("/schedule").text
+    assert client.get("/api/schedule").json()["timer"]["loaded"] is False
 
 
 # ---- saving ----
 
 def test_a_timetable_is_saved_and_shown_back(isolated_state):
-    response = client.post("/schedule", data={"reed.enabled": "on", "reed.mode": "at",
-                                              "reed.at": "07:00, 18:30", "reed.days": ["0", "4"]},
-                           follow_redirects=False)
+    response = client.post("/api/schedule", data={"reed.enabled": "on", "reed.mode": "at",
+                                                  "reed.at": "07:00, 18:30", "reed.days": ["0", "4"]})
 
-    assert response.status_code == 303
+    assert response.status_code == 200
     assert saved(isolated_state)["reed"] == {"enabled": True, "at": ["07:00", "18:30"], "days": [0, 4]}
-    assert "at 07:00, 18:30 on Mon, Fri" in client.get("/schedule").text
+    summaries = {row["board"]: row["summary"] for row in client.get("/api/schedule").json()["rows"]}
+    assert summaries["reed"] == "at 07:00, 18:30 on Mon, Fri"
 
 
 def test_an_interval_with_a_window_is_saved(isolated_state):
-    client.post("/schedule", data={"email.enabled": "on", "email.mode": "every",
-                                   "email.every_minutes": "120",
-                                   "email.window_from": "07:00", "email.window_to": "21:00"},
-                follow_redirects=False)
+    client.post("/api/schedule", data={"email.enabled": "on", "email.mode": "every",
+                                       "email.every_minutes": "120",
+                                       "email.window_from": "07:00", "email.window_to": "21:00"})
 
     assert saved(isolated_state)["email"] == {"enabled": True, "every_minutes": 120,
                                               "window": ["07:00", "21:00"]}
 
 
 def test_an_invalid_time_saves_nothing_and_says_why(isolated_state):
-    response = client.post("/schedule", data={"reed.enabled": "on", "reed.mode": "at",
-                                              "reed.at": "half seven"})
+    response = client.post("/api/schedule", data={"reed.enabled": "on", "reed.mode": "at",
+                                                  "reed.at": "half seven"})
 
     assert response.status_code == 400
-    assert "is not a time of day" in response.text
+    assert "is not a time of day" in str(response.json()["detail"]["problems"]["reed"])
     assert not (isolated_state / "schedule.json").exists()
 
 
 def test_a_switched_off_board_is_not_held_to_its_leftover_fields(isolated_state):
     # Turning a board off should always work, whatever is left in its inputs.
-    response = client.post("/schedule", data={"reed.mode": "at", "reed.at": "nonsense"},
-                           follow_redirects=False)
+    response = client.post("/api/schedule", data={"reed.mode": "at", "reed.at": "nonsense"})
 
-    assert response.status_code == 303
+    assert response.status_code == 200
     assert saved(isolated_state)["reed"]["enabled"] is False
 
 
@@ -146,7 +144,9 @@ def test_the_overview_warns_when_a_schedule_has_no_timer(monkeypatch, isolated_s
     schedule.save({"reed": {"enabled": True, "at": ["07:00"]}})
     monkeypatch.setattr(schedule_view.install_timer, "is_loaded", lambda: False)
 
-    assert "the timer is\n  not loaded" in client.get("/").text.replace("\r", "")
+    overview = client.get("/api/overview").json()
+
+    assert overview["scheduled"] == ["reed"] and overview["timer"]["loaded"] is False
 
 
 # ---- ingest ----
@@ -181,10 +181,10 @@ def test_the_ingest_page_previews_without_writing(tmp_path, monkeypatch):
                         lambda board: report if board == "email" else (_ for _ in ()).throw(SystemExit("no report")))
     before = (base / "data" / "pipeline.md").read_text(encoding="utf-8")
 
-    page = client.get("/ingest")
+    page = client.get("/api/ingest").json()
 
-    assert "Senior Software Engineer" in page.text     # the row
-    assert "Send 1" in page.text                       # the button for its board
+    assert [row["title"] for row in page["rows"]] == ["Senior Software Engineer"]
+    assert [(p["board"], p["count"]) for p in page["previews"] if p["count"]] == [("email", 1)]
     assert (base / "data" / "pipeline.md").read_text(encoding="utf-8") == before
 
 
@@ -194,10 +194,11 @@ def test_ingesting_a_report_that_is_no_longer_the_newest_is_refused(tmp_path, mo
     monkeypatch.setattr(ingest_view, "workspace", lambda: base)
     monkeypatch.setattr(ingest_view.ingest_jobspy, "latest_report", lambda board: report)
 
-    response = client.post("/ingest/email", data={"report": "email_deduped_2026-08-01_090000.json"})
+    response = client.post("/api/ingest/email",
+                           data={"report": "email_deduped_2026-08-01_090000.json"})
 
     assert response.status_code == 409
-    assert "reload and look again" in response.text
+    assert "reload and look again" in response.json()["detail"]
 
 
 def test_ingesting_runs_the_command_rather_than_reimplementing_it(tmp_path, monkeypatch):
@@ -213,10 +214,9 @@ def test_ingesting_runs_the_command_rather_than_reimplementing_it(tmp_path, monk
     monkeypatch.setattr(ingest_view.ingest_jobspy, "latest_report", lambda board: report)
     monkeypatch.setattr(ingest_view, "run", fake_run)
 
-    response = client.post("/ingest/email", data={"report": report.name, "count": "1"},
-                           follow_redirects=False)
+    response = client.post("/api/ingest/email", data={"report": report.name, "count": "1"})
 
-    assert response.status_code == 303
+    assert response.status_code == 200
     assert called == {"board": "email", "expected": report.name}
 
 
@@ -231,25 +231,24 @@ def test_the_scheduler_has_no_route_into_the_workspace():
 # ---- switching boards on and off ----
 
 def test_a_board_can_be_enabled_from_the_page(isolated_state):
-    response = client.post("/schedule", data={"reed.runnable": "on", "email.runnable": "on",
-                                              "email.enabled": "on", "email.mode": "every",
-                                              "email.every_minutes": "120"},
-                           follow_redirects=False)
+    response = client.post("/api/schedule", data={"reed.runnable": "on", "email.runnable": "on",
+                                                  "email.enabled": "on", "email.mode": "every",
+                                                  "email.every_minutes": "120"})
 
-    assert response.status_code == 303
+    assert response.status_code == 200
     assert config_says(isolated_state) == {"reed": True, "email": True}
-    assert "email" in response.headers["location"] and "enabled" in response.headers["location"]
+    assert response.json()["changed"] == ["email enabled"]
 
 
 def test_a_board_can_be_disabled_from_the_page(isolated_state):
-    client.post("/schedule", data={"email.runnable": "on"}, follow_redirects=False)   # on
-    client.post("/schedule", data={}, follow_redirects=False)                          # both off
+    client.post("/api/schedule", data={"email.runnable": "on"})   # on
+    client.post("/api/schedule", data={})                          # both off
 
     assert config_says(isolated_state) == {"reed": False, "email": False}
 
 
 def test_editing_the_config_keeps_everything_else_in_it(isolated_state):
-    client.post("/schedule", data={"email.runnable": "on"}, follow_redirects=False)
+    client.post("/api/schedule", data={"email.runnable": "on"})
 
     text = (isolated_state / "config.yml").read_text(encoding="utf-8")
     assert "# A comment that must survive being edited around." in text
@@ -259,15 +258,15 @@ def test_editing_the_config_keeps_everything_else_in_it(isolated_state):
 
 
 def test_a_board_with_no_config_block_is_not_invented(isolated_state):
-    client.post("/schedule", data={"haystack.runnable": "on"}, follow_redirects=False)
+    client.post("/api/schedule", data={"haystack.runnable": "on"})
 
     assert "haystack" not in (isolated_state / "config.yml").read_text(encoding="utf-8")
 
 
 def test_an_invalid_timetable_leaves_the_config_alone_too(isolated_state):
     # Nothing was saved means nothing at all: not the schedule, and not config.yml either.
-    response = client.post("/schedule", data={"email.runnable": "on", "email.enabled": "on",
-                                              "email.mode": "at", "email.at": "half seven"})
+    response = client.post("/api/schedule", data={"email.runnable": "on", "email.enabled": "on",
+                                                  "email.mode": "at", "email.at": "half seven"})
 
     assert response.status_code == 400
     assert config_says(isolated_state)["email"] is False
@@ -290,7 +289,7 @@ def _two_boards(tmp_path, monkeypatch):
 def test_send_all_appears_only_when_more_than_one_board_has_something(tmp_path, monkeypatch):
     _two_boards(tmp_path, monkeypatch)
 
-    assert "Send all 2 to the pipeline" in client.get("/ingest").text
+    assert client.get("/api/ingest").json()["total"] == 2
 
 
 def test_send_all_ingests_every_previewed_board(tmp_path, monkeypatch):
@@ -303,12 +302,11 @@ def test_send_all_ingests_every_previewed_board(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ingest_view, "run", fake_run)
 
-    response = client.post("/ingest-all",
+    response = client.post("/api/ingest-all",
                            data={"report.email": reports["email"].name,
-                                 "report.reed": reports["reed"].name, "count": "2"},
-                           follow_redirects=False)
+                                 "report.reed": reports["reed"].name, "count": "2"})
 
-    assert response.status_code == 303
+    assert response.status_code == 200
     assert sorted(ran) == [("email", reports["email"].name), ("reed", reports["reed"].name)]
 
 
@@ -324,20 +322,21 @@ def test_send_all_skips_a_board_whose_report_moved_and_still_sends_the_rest(tmp_
 
     monkeypatch.setattr(ingest_view, "run", fake_run)
 
-    response = client.post("/ingest-all",
-                           data={"report.email": reports["email"].name, "report.reed": "stale.json"},
-                           follow_redirects=False)
+    response = client.post("/api/ingest-all",
+                           data={"report.email": reports["email"].name, "report.reed": "stale.json"})
 
     assert sent == ["email"]
-    assert "skipped=reed" in response.headers["location"]
+    assert response.json()["appended"] == ["email"]
+    assert response.json()["skipped"][0].startswith("reed (")
 
 
 def test_send_all_with_nothing_pending_is_harmless(tmp_path, monkeypatch):
     _two_boards(tmp_path, monkeypatch)
 
-    response = client.post("/ingest-all", data={}, follow_redirects=False)
+    response = client.post("/api/ingest-all", data={})
 
-    assert response.status_code == 303
+    assert response.status_code == 200
+    assert response.json() == {"appended": [], "skipped": [], "added": 0}
 
 
 # ---- reading the table ----
@@ -359,58 +358,56 @@ def _mixed_rows(tmp_path, monkeypatch):
     return base
 
 
-def rows_shown(page: str) -> int:
-    # One <tr> per candidate in the second table; the summary table has one row per board.
-    return page.count('target="_blank"')
+def shown(query: str = "") -> dict:
+    return client.get(f"/api/ingest{query}").json()
 
 
 def test_every_candidate_is_a_row_with_its_own_fields(tmp_path, monkeypatch):
     _mixed_rows(tmp_path, monkeypatch)
 
-    page = client.get("/ingest").text
+    page = shown()
 
-    assert rows_shown(page) == 3
-    assert "Monzo" in page and "Wise" in page
-    assert "3 of 3 shown" in page
+    assert len(page["rows"]) == 3 and page["total"] == 3
+    assert {row["company"] for row in page["rows"]} == {"Monzo", "Acme", "Wise"}
 
 
 def test_the_table_narrows_by_board(tmp_path, monkeypatch):
     _mixed_rows(tmp_path, monkeypatch)
 
-    page = client.get("/ingest?board=reed").text
+    page = shown("?board=reed")
 
-    assert rows_shown(page) == 1
-    assert "Wise" in page and "Monzo" not in page
+    assert [row["company"] for row in page["rows"]] == ["Wise"]
 
 
 def test_the_table_narrows_by_text_across_its_columns(tmp_path, monkeypatch):
     _mixed_rows(tmp_path, monkeypatch)
 
-    assert rows_shown(client.get("/ingest?q=london").text) == 2       # location
-    assert rows_shown(client.get("/ingest?q=acme").text) == 1         # company
-    assert rows_shown(client.get("/ingest?q=london+wise").text) == 1  # both terms must match
-    assert rows_shown(client.get("/ingest?q=nothing").text) == 0
+    assert len(shown("?q=london")["rows"]) == 2       # location
+    assert len(shown("?q=acme")["rows"]) == 1         # company
+    assert len(shown("?q=london+wise")["rows"]) == 1  # both terms must match
+    assert len(shown("?q=nothing")["rows"]) == 0
 
 
 def test_filtering_does_not_change_what_a_button_sends(tmp_path, monkeypatch):
     # The filter is a way of reading the list, not of choosing from it: ingest appends a whole
-    # report, and the buttons must keep saying so.
+    # report, and the counts the buttons are drawn from must keep saying so.
     _mixed_rows(tmp_path, monkeypatch)
 
-    page = client.get("/ingest?board=reed").text
+    page = shown("?board=reed")
 
-    assert "Send all 3 to the pipeline" in page
-    assert "Send 2" in page          # email's own button still offers both of its rows
+    assert len(page["rows"]) == 1
+    assert page["total"] == 3
+    assert {p["board"]: p["count"] for p in page["previews"] if p["count"]} == {"email": 2, "reed": 1}
 
 
 # ---- triggering by hand ----
 
-def test_each_runnable_board_offers_a_run_button(isolated_state):
-    page = client.get("/schedule").text
+def test_each_runnable_board_is_reported_as_runnable(isolated_state):
+    # The Run button is drawn for a board the config allows to run; a disabled one offers none.
+    rows = {row["board"]: row for row in client.get("/api/schedule").json()["rows"]}
 
-    assert 'form="run-reed"' in page                       # enabled in the test config
-    assert '<form id="run-reed" method="post" action="/scan/reed">' in page
-    assert 'form="run-email"' not in page                  # disabled there, so nothing to run
+    assert rows["reed"]["runnable"] is True     # enabled in the test config
+    assert rows["email"]["runnable"] is False   # disabled there, so nothing to run
 
 
 def test_run_due_starts_exactly_what_the_timer_would(isolated_state, monkeypatch):
@@ -425,10 +422,10 @@ def test_run_due_starts_exactly_what_the_timer_would(isolated_state, monkeypatch
 
     monkeypatch.setattr(scans.scans, "start_and_wait", fake_start)
 
-    response = client.post("/schedule/run-due", follow_redirects=False)
+    response = client.post("/api/schedule/run-due")
 
-    assert response.status_code == 303
-    assert "started=reed" in response.headers["location"]
+    assert response.status_code == 200
+    assert response.json()["boards"] == ["reed"]
     for _ in range(50):                       # the pool starts them in a background task
         if started:
             break
@@ -439,15 +436,15 @@ def test_run_due_starts_exactly_what_the_timer_would(isolated_state, monkeypatch
 def test_run_due_with_nothing_due_says_so_rather_than_scanning(monkeypatch):
     monkeypatch.setattr(scan_all, "due_boards", lambda config: [])
 
-    response = client.post("/schedule/run-due", follow_redirects=False)
+    response = client.post("/api/schedule/run-due")
 
-    assert "nothing" in response.headers["location"]
+    assert response.json()["boards"] == []
 
 
 def test_run_due_skips_a_board_that_is_already_scanning(monkeypatch):
     monkeypatch.setattr(scan_all, "due_boards", lambda config: ["reed"])
     monkeypatch.setattr(scans.scans, "board_is_running", lambda board: True)
 
-    response = client.post("/schedule/run-due", follow_redirects=False)
+    response = client.post("/api/schedule/run-due")
 
-    assert "nothing" in response.headers["location"]
+    assert response.json()["boards"] == []

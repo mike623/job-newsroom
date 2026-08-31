@@ -81,10 +81,10 @@ def test_the_dashboard_asks_the_runner_rather_than_spawning(monkeypatch):
     monkeypatch.setattr(runner_client, "post", fake_post)
     monkeypatch.setattr(scans.scans, "start", _must_not_spawn)
 
-    response = dashboard.post("/scan/reed", follow_redirects=False)
+    response = dashboard.post("/api/scan/reed")
 
-    assert response.status_code == 303
-    assert response.headers["location"] == "/scan/2026-08-27_090000-reed"
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "2026-08-27_090000-reed"
     assert asked == ["/scan/reed?trigger=dashboard"]
 
 
@@ -101,7 +101,7 @@ def test_the_runners_refusal_reaches_the_browser_as_its_own_answer(monkeypatch):
 
     monkeypatch.setattr(runner_client, "post", refuse)
 
-    assert dashboard.post("/scan/reed", follow_redirects=False).status_code == 409
+    assert dashboard.post("/api/scan/reed").status_code == 409
 
 
 def test_without_a_runner_the_dashboard_starts_the_scan_itself(monkeypatch):
@@ -114,14 +114,15 @@ def test_without_a_runner_the_dashboard_starts_the_scan_itself(monkeypatch):
 
     monkeypatch.setattr(scans.scans, "start", fake_start)
 
-    response = dashboard.post("/scan/reed", follow_redirects=False)
+    response = dashboard.post("/api/scan/reed")
 
-    assert response.status_code == 303
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "r1"
     assert started == ["reed"]
 
 
 def test_an_unreachable_runner_is_reported_not_silently_ignored(monkeypatch):
     monkeypatch.setenv("RUNNER_URL", "http://127.0.0.1:9")     # discard port: nothing listens
-    response = dashboard.post("/scan/reed", follow_redirects=False)
+    response = dashboard.post("/api/scan/reed")
     assert response.status_code == 502
     assert "not answering" in response.json()["detail"]
