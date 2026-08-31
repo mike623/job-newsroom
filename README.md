@@ -3,16 +3,17 @@
 ![Python version](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 [![Crawl4AI](https://img.shields.io/badge/built%20with-Crawl4AI-6f42c1.svg)](https://github.com/unclecode/crawl4ai)
 [![FastAPI](https://img.shields.io/badge/dashboard-FastAPI-009485.svg)](https://fastapi.tiangolo.com/)
-![Sources](https://img.shields.io/badge/sources-7-success.svg)
-![Tests](https://img.shields.io/badge/tests-299%20passing-success.svg)
+[![React](https://img.shields.io/badge/interface-React%20%2B%20shadcn%2Fui-61dafb.svg)](https://react.dev/)
+![Sources](https://img.shields.io/badge/sources-8-success.svg)
+![Tests](https://img.shields.io/badge/tests-316%20passing-success.svg)
 
 > A one-person newsroom for the job market
 
-Seven sources file the same story every morning, in different words, with the tracking links
+Eight sources file the same story every morning, in different words, with the tracking links
 changed. Job boards render with JavaScript, rate-limit aggressively, wrap every posting in a
 per-recipient URL, and never tell you what changed since yesterday.
 
-Job Newsroom runs the desk. It collects from all seven, reconciles them into one story per job,
+Job Newsroom runs the desk. It collects from all eight, reconciles them into one story per job,
 and shows you the edition: what is new, what has quietly disappeared, how long something has been
 open, and what you have already dealt with.
 
@@ -29,7 +30,9 @@ docker compose up -d --build     # http://127.0.0.1:8080
 - **Deduped across sources.** The same posting arriving as a Totaljobs magic link, a LinkedIn tracker and an Indeed click wrapper is one row, not four.
 - **Structured pay.** Free text like `£70k - 85k per year` becomes a sortable minimum, maximum and period.
 - **File from the browser.** Start a source and watch its output stream live; the run survives closing the page.
-- **Slow by design.** Per-host request rates are bounded and delays jittered, so filing from seven sources at once costs no source extra traffic.
+- **Slow by design.** Per-host request rates are bounded and delays jittered, so filing from eight sources at once costs no source extra traffic.
+- **The list is what is worth opening.** Adverts the downstream filter would reject are hidden
+  unless you ask for them, so the page and `/export.csv` answer the same question.
 - **Honest failures.** A page that comes back empty is reported as a broken run, not as a search with no matches.
 
 ## The desk
@@ -53,8 +56,9 @@ open since the 6th of August and has appeared in 58 runs since.
 
 ### The wire
 
-1,640 jobs across seven sources, filterable by source, pay floor, and whether they have already
-reached your downstream workspace.
+Jobs across all eight sources, filterable by source, pay floor, and whether they have already
+reached your downstream workspace. Adverts the ingest would drop are hidden by default — **Show
+skipped** brings them back, marked with the reason each was rejected.
 
 ![The jobs list](docs/screenshots/jobs.png)
 
@@ -376,6 +380,12 @@ Relevance is defined downstream on purpose. It comes from **career-ops/portals.y
 opinion about which jobs matter. Rows already in `data/pipeline.md` or `data/scan-history.tsv` are
 skipped, as is one req posted to several cities.
 
+The Ingest page is that same dry run, drawn: a row per source with what it would append, and a
+table of the individual jobs, each carrying the exact pipeline line it will become. Filtering
+narrows what you read, never what is sent — ingest appends a whole report, so the buttons always
+state the full count. A source whose newest report changed since the preview was drawn is
+skipped rather than appended unseen.
+
 > [!IMPORTANT]
 > The downstream workspace is written to only when a person asks. `ingest_jobspy.py` is its sole
 > writer, reachable from the terminal or the Ingest page and never from the scheduler. A test
@@ -502,7 +512,7 @@ those captures are what you diff.
 ## Testing
 
 ```bash
-python -m pytest                          # 299 tests, no network required
+python -m pytest                          # 316 tests, no network required
 python -m py_compile reed_crawler/*.py dashboard/*.py runner/*.py
 ```
 
