@@ -61,7 +61,10 @@ class ScanRun:
 
     @property
     def has_log(self) -> bool:
-        return bool(self.log) and self.log_path.exists()
+        # The file on disk is the evidence, not the record's `log` field: two processes write a
+        # record at scan start (this one, and the child's own run_record) and the later
+        # read-modify-write drops whatever the other had just added.
+        return self.log_path.exists()
 
     @property
     def display_started(self) -> str:

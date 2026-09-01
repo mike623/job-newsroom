@@ -92,12 +92,13 @@ export default function RunsPage() {
                 </TableCell>
                 <TableCell className="text-right tabular-nums">{run.searches}</TableCell>
                 <TableCell className="text-right tabular-nums">{run.jobs}</TableCell>
-                <TableCell className="text-sm">
+                <TableCell className="space-x-3 text-sm whitespace-nowrap">
                   {run.has_log ? (
                     <Link to={`/scan/${run.run_id}`} className="underline underline-offset-4">
                       log
                     </Link>
-                  ) : run.status === "interrupted" || run.status === "failed" ? (
+                  ) : null}
+                  {run.status === "interrupted" || run.status === "failed" ? (
                     <span className="text-amber-600 dark:text-amber-400">no report</span>
                   ) : !run.healthy ? (
                     <span className="text-destructive">found nothing</span>
