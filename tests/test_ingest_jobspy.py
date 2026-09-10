@@ -194,3 +194,19 @@ def test_dashboard_skip_reasons_match_what_ingest_drops(base, tmp_path, monkeypa
     assert dashboard_pipeline.skip_reason(FakeJob(rows[2]), rules) == "title: no match"
     assert dashboard_pipeline.skip_reason(FakeJob(rows[3]), rules) == "location: “india”"
     assert dashboard_pipeline.skip_reason(FakeJob(rows[4]), rules).startswith("posted >")
+
+
+def test_a_bracketed_stack_between_seniority_and_role_still_matches(tmp_path):
+    """"Senior (Node/React/AWS) Engineer" carries no contiguous positive; the aside is dropped."""
+    (tmp_path / "portals.yml").write_text(
+        "title_filter:\n"
+        "  positive: [Senior Engineer, Senior Software Engineer]\n"
+        "  negative: ['(Java']\n",
+        encoding="utf-8",
+    )
+    filters = ingest_jobspy.load_filters(tmp_path)
+
+    assert filters.title_passes("Senior (Node/React/AWS) Engineer")
+    assert filters.title_passes("Senior Software Engineer")
+    # The aside is where the stack negatives live, so they are matched before it is dropped.
+    assert not filters.title_passes("Senior (Java/Spring) Engineer")

@@ -41,6 +41,16 @@ View job: https://www.linkedin.com/comm/jobs/view/4231567890/?trackingId=Zx%2F1&
 See all jobs: https://www.linkedin.com/comm/jobs/search-results/?keywords=engineer
 """
 
+LINKEDIN_SINGLE = """\
+A new job matches your preferences.
+
+Lead Java Engineer
+UK Home Office
+Sheffield
+Top applicant
+View job: https://www.linkedin.com/comm/jobs/view/4452260236/?trackingId=E5s4Dcx
+"""
+
 TOTALJOBS_DIGEST = """\
 Check out your latest matches
 
@@ -358,3 +368,40 @@ def test_an_undecodable_wrapper_is_dropped_rather_than_reported_as_a_job():
                                     settings=CTS + "nope")
     leads, _ = leads_for("job/discovery/indeed", "indeed", "x", "donotreply@match.indeed.com", body)
     assert leads == []
+
+
+def test_marking_read_makes_the_next_run_list_only_unseen_mail(monkeypatch):
+    """The seen flag only saves work if the listing asks for unseen mail."""
+    asked: list[list[str]] = []
+
+    def fake_himalaya(args):
+        asked.append(args)
+        return "[]"
+
+    monkeypatch.setattr(email, "himalaya", fake_himalaya)
+
+    email.list_envelopes("job/discovery/indeed", 25)
+    assert asked[-1][-1] == "order by date desc"
+
+    email.list_envelopes("job/discovery/indeed", 25, unread_only=True)
+    assert asked[-1][-1] == "not flag seen order by date desc"
+
+
+def test_a_linkedin_single_job_alert_reads_the_card_not_the_intro() -> None:
+    # The first card of a mail is preceded by the alert's own intro. Left in the block it
+    # became the job title and shunted company and location along by one — eight stored jobs
+    # read "A new job matches your preferences." with the real title filed as the company.
+    template = email.detect_template("linkedin", LINKEDIN_SINGLE)
+    found = email.extract_urls("linkedin", LINKEDIN_SINGLE, 10)
+
+    per_job = email.job_meta_from_body(template, LINKEDIN_SINGLE, {raw: url for raw, url in found})
+    card = next(iter(per_job.values()))
+
+    assert card == {"title": "Lead Java Engineer", "company": "UK Home Office",
+                    "location": "Sheffield"}
+
+
+def test_an_unknown_linkedin_intro_is_left_to_the_subject_line() -> None:
+    # The backstop for the next intro wording BLOCK_NOISE has not been taught: say nothing
+    # rather than promote it to a title and invent the fields beneath it.
+    assert email.linkedin_listing(["Your job alert for engineer", "Acme", "Leeds"], [], "") == {}

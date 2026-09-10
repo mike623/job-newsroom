@@ -44,6 +44,14 @@ EXTRA_NEGATIVE = [
     "nurse", "teacher", "chef", "driver", "electrician", "mechanical",
 ]
 
+ASIDE = re.compile(r"[(\[][^)\]]*[)\]]")
+
+
+def _without_asides(title: str) -> str:
+    """A title with its bracketed stack list removed: "senior (node/aws) engineer" -> "senior engineer"."""
+    return " ".join(ASIDE.sub(" ", title).split())
+
+
 # career-ops writes its own pipeline in Spanish and English by turns; both name the same section.
 PENDING_HEADING = re.compile(r"^##[ \t]+(Pending|Pendientes)[ \t]*$", re.M | re.I)
 URL_IN_LINE = re.compile(r"(https?://\S+)")
@@ -84,7 +92,11 @@ class Filters:
         t = (title or "").lower()
         if any(n in t for n in self.negative):
             return False
-        return any(p in t for p in self.positive)
+        # A recruiter wedges the stack between the seniority word and the role -- "Senior
+        # (Node/React/AWS) Engineer" contains no contiguous positive at all. Positives are
+        # tried against the aside-stripped title as well as the original. Negatives are only
+        # ever tried against the original, because the aside is exactly where "(Java" lives.
+        return any(p in t or p in _without_asides(t) for p in self.positive)
 
     def location_passes(self, location: str) -> bool:
         l = (location or "").lower()

@@ -145,15 +145,20 @@ def himalaya(argv: list[str]) -> str:
     return proc.stdout
 
 
-def list_envelopes(label: str, limit: int, since: str = "") -> list[dict]:
+def list_envelopes(label: str, limit: int, since: str = "", unread_only: bool = False) -> list[dict]:
     """Newest `limit` envelopes in a label, no older than `since` (YYYY-MM-DD).
 
     Himalaya's search parser rejects `after YYYY-MM-DD and order by date desc`, so the query
     stays simple and the cutoff is applied here. himalaya prints IMAP warnings on stderr and
     sometimes before the JSON, so the payload is found rather than assumed.
+
+    `unread_only` is what makes marking mail read worth doing: without it a scan re-reads and
+    re-parses every message inside the window on every run, and the seen flag buys nothing.
     """
-    out = himalaya(["-o", "json", "envelope", "list", "-f", label, "-s", str(limit),
-                    "order by date desc"])
+    query = "order by date desc"
+    if unread_only:
+        query = "not flag seen " + query
+    out = himalaya(["-o", "json", "envelope", "list", "-f", label, "-s", str(limit), query])
     start = out.find("[")
     if start < 0:
         raise MailError(f"himalaya returned no JSON for {label}")
@@ -466,6 +471,8 @@ BLOCK_NOISE = re.compile(
     # Indeed's match mail opens with this line; left in, it becomes the first job's title and
     # shunts every other field of that card along by one.
     r"|jobs are based on your preferences"
+    # LinkedIn's equivalents, one per card count. Same failure as the Indeed line above.
+    r"|an? new job matches your preferences|new jobs match your preferences"
     r"|from:|to:|subject:|date:|\d+ (new )?jobs?\b)", re.I)
 
 TOTALJOBS_TERMS = re.compile(
@@ -486,9 +493,21 @@ def indeed_listing(before, after, prefix) -> dict:
     return {"title": at(before, 0), "company": company, "location": location}
 
 
+# The lines a LinkedIn alert opens with, above its first card. BLOCK_NOISE strips the ones we
+# have seen; this is the backstop for the one we have not.
+LINKEDIN_INTRO = re.compile(r"^(your job alert for|an? new jobs? match|new jobs? match"
+                            r"|\d+ new jobs?)", re.I)
+
+
 def linkedin_listing(before, after, prefix) -> dict:
-    # Title / Company / Location / ... / "View job: <url>"
-    return {"title": at(before, 0), "company": at(before, 1), "location": at(before, 2)}
+    """Title / Company / Location / ... / "View job: <url>"."""
+    title = at(before, 0)
+    if LINKEDIN_INTRO.match(title):
+        # An intro line BLOCK_NOISE does not know yet. Saying nothing leaves the subject line
+        # to answer; promoting this to a title shunts company and location along by one and
+        # the row reads as a real job with invented fields.
+        return {}
+    return {"title": title, "company": at(before, 1), "location": at(before, 2)}
 
 
 # "Salary: £49,000 - £59,000 a year" / "Job type: Full-time" — the first stated term is what
@@ -793,7 +812,8 @@ def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False,
             for meta in labels:
                 print(f"Reading {meta['label']} (since {since}, newest {per_label})")
                 try:
-                    envelopes = list_envelopes(meta["label"], per_label, since)
+                    envelopes = list_envelopes(meta["label"], per_label, since,
+                                               unread_only=mark_read)
                 except MailError as failure:
                     print(f"  failed: {failure}")
                     failures.append(meta["label"])

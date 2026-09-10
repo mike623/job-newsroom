@@ -157,7 +157,9 @@ def skip_reason(job, rules) -> str:
     negative = next((n for n in rules.negative if n in title), "")
     if negative:
         return f"title: “{negative}”"
-    if not any(p in title for p in rules.positive):
+    # Asked of the filter rather than restated here: the positive rule is not a plain
+    # substring test (a bracketed stack list is dropped first), and two copies of it drift.
+    if not rules.title_passes(job.role_title):
         return "title: no match"
     location = job.get("location")
     if location and not rules.location_passes(location):
