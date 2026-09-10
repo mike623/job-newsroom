@@ -51,7 +51,7 @@ boards:
     location_groups:
       - core
     radius: 30
-    max_pages_per_run: 4
+    max_pages_per_run: 5  # cap on the number of searches; >= the title count, so every title is asked
     full_jd:
       enabled: true
       top_n: 5
@@ -66,7 +66,7 @@ boards:
     location_groups:
       - core
     radius: 50
-    max_pages_per_run: 2
+    max_pages_per_run: 5  # cap on the number of searches; >= the title count, so every title is asked
     full_jd:
       enabled: true
       top_n: 3
@@ -103,7 +103,7 @@ boards:
       - core
     distance: 30           # kilometres from the location
     results_per_page: 50   # the API's maximum
-    max_pages_per_run: 4
+    max_pages_per_run: 20  # an API with credentials, not a crawl: the full title x location product
 
   linkedin:
     # Read from LinkedIn's unauthenticated guest endpoint, not by crawling: there is no
@@ -119,7 +119,7 @@ boards:
     distance: 30           # miles from the location
     max_age_days: 7        # f_TPR freshness filter; without it page one carries stale adverts
     pages_per_search: 2    # ten cards a page, so 2 is ~20 leads per search
-    max_pages_per_run: 4   # cap on the number of searches, as elsewhere
+    max_pages_per_run: 5  # cap on the number of searches; >= the title count, so every title is asked
     delay_seconds: 60
 
   talent:
@@ -146,7 +146,8 @@ boards:
     messages_per_label: 25   # newest N per label per run
     max_age_days: 14         # ignore mail older than this
     max_urls_per_message: 12 # a digest links its own footer as well as its jobs
-    mark_read: false         # flag mail that produced leads as seen, so a rerun skips it
+    mark_read: false         # flag mail that produced leads as seen, and list only unseen
+                             # mail, so each run reads what has arrived since the last one
     labels:
       - label: job/discovery/indeed
         provider: indeed
@@ -160,6 +161,37 @@ boards:
         provider: haystack
       - label: job/discovery/welcometothejungle
         provider: welcometothejungle
+
+  # --- Aggregator feeds -------------------------------------------------------------
+  # One endpoint publishing many companies' postings. Plain HTTP GETs returning JSON or XML,
+  # all served by reed_crawler/aggregator_pipeline.py and described in aggregator_feeds.py.
+  # They are remote-global where the boards above are UK-specific, so expect most of what
+  # they return to be filtered out downstream by career-ops/portals.yml.
+
+  devitjobs:
+    # DevITjobs UK publishes its whole board as one XML feed — no query parameters, so a scan
+    # takes the feed whole. The only feed of the set quoting pay as prose, so it is the only
+    # one salary.py is asked to parse. ~11 MB uncompressed, requested gzipped.
+    enabled: false
+    max_items: 500         # keep the best-paid N of a large feed
+
+  remoteok:
+    # remoteok.com/api returns the latest ~100 remote postings in one array whose first
+    # element is the API's legal notice rather than a job. No query parameters at all.
+    enabled: false
+
+  themuse:
+    # 411,049 postings across 20,553 pages, so `queries` is required and the scan refuses to
+    # start without it. These are The Muse's own &category= names, NOT job titles: a title
+    # like "senior software engineer" matches nothing, while "Software Engineering" narrows
+    # to 100,800. Locations are free text.
+    enabled: false
+    queries:
+      - Software Engineering
+    location_groups:
+      - core
+    pages_per_query: 3
+    max_items: 200
 
 crawl:
   delay_seconds: 15              # Slow mode: wait between search pages.

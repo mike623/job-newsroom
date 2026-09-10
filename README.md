@@ -9,11 +9,11 @@
 
 > A one-person newsroom for the job market
 
-Eight sources file the same story every morning, in different words, with the tracking links
+Eleven sources file the same story every morning, in different words, with the tracking links
 changed. Job boards render with JavaScript, rate-limit aggressively, wrap every posting in a
 per-recipient URL, and never tell you what changed since yesterday.
 
-Job Newsroom runs the desk. It collects from all eight, reconciles them into one story per job,
+Job Newsroom runs the desk. It collects from all eleven, reconciles them into one story per job,
 and shows you the edition: what is new, what has quietly disappeared, how long something has been
 open, and what you have already dealt with.
 
@@ -25,12 +25,12 @@ docker compose up -d --build     # http://127.0.0.1:8080
 
 ## What you get
 
-- **Eight sources, one config.** Reed, Totaljobs, Indeed, Talent.com, Adzuna, Haystack, LinkedIn and your Gmail alert labels, all driven from a single `config.yml`.
+- **Eleven sources, one config.** Reed, Totaljobs, Indeed, Talent.com, Adzuna, Haystack, LinkedIn and your Gmail alert labels, plus the aggregator feeds DevITjobs UK, RemoteOK and The Muse — all driven from a single `config.yml`.
 - **One story per job.** Every job appears once, with when it was first and last seen and how many editions have carried it.
 - **Deduped across sources.** The same posting arriving as a Totaljobs magic link, a LinkedIn tracker and an Indeed click wrapper is one row, not four.
 - **Structured pay.** Free text like `£70k - 85k per year` becomes a sortable minimum, maximum and period.
 - **File from the browser.** Start a source and watch its output stream live; the run survives closing the page.
-- **Slow by design.** Per-host request rates are bounded and delays jittered, so filing from eight sources at once costs no source extra traffic.
+- **Slow by design.** Per-host request rates are bounded and delays jittered, so filing from every source at once costs no source extra traffic.
 - **The list is what is worth opening.** Adverts the downstream filter would reject are hidden
   unless you ask for them, so the page and `/export.csv` answer the same question.
 - **Honest failures.** A page that comes back empty is reported as a broken run, not as a search with no matches.
@@ -56,7 +56,7 @@ open since the 6th of August and has appeared in 58 runs since.
 
 ### The wire
 
-Jobs across all eight sources, filterable by source, pay floor, and whether they have already
+Jobs across every source, filterable by source, pay floor, and whether they have already
 reached your downstream workspace. Adverts the ingest would drop are hidden by default — **Show
 skipped** brings them back, marked with the reason each was rejected.
 
@@ -193,8 +193,51 @@ python reed_crawler/board_config.py
 | **Adzuna** | JSON API | Not crawled at all: the site 403s every bot. Needs free API credentials |
 | **LinkedIn** | Guest endpoint | Not crawled at all: an unauthenticated HTML fragment — see below |
 | **Email** | Gmail labels | Not crawled at all: reads the alert mail the sources already send |
+| **DevITjobs UK** | XML feed | The whole UK board as one gzipped feed — see below |
+| **RemoteOK** | JSON feed | One array of the latest remote postings; element 0 is a legal notice |
+| **The Muse** | JSON API | 411,049 postings, so a category is required before it will scan |
 
-Four of the eight are not crawls, and that is the interesting part.
+Seven of the eleven are not crawls, and that is the interesting part.
+
+### Aggregator feeds are one module
+
+An aggregator publishes many companies' postings from a single endpoint, so reading one is a
+plain GET returning JSON or XML — no browser, no card parsing. That fetching is identical from
+feed to feed, so it is written once in `aggregator_pipeline.py`, and `aggregator_feeds.py` holds
+the table of what actually differs: the endpoint, how a page is addressed, where the records sit
+in the reply, and how the feed says it has run out of pages.
+
+Each feed is still a source in its own right — its own `outputs/<feed>/`, lock, schedule slot and
+row on the overview — selected by `--feed`:
+
+```bash
+.venv/bin/python reed_crawler/aggregator_pipeline.py scan --feed devitjobs --config config.yml
+```
+
+They are remote-global where the crawled sources are UK-specific, so most of what they return is
+filtered out downstream. DevITjobs UK is the exception: UK-only, and the one feed of the set
+quoting pay as prose rather than as numbers.
+
+Two of them will not be taken whole. The Muse is 411,049 postings across 20,553 pages, so it
+requires a `queries:` list and exits naming the key if it has none — and those are The Muse's own
+category names (`Software Engineering`), not job titles, which match nothing:
+
+```yaml
+boards:
+  devitjobs:
+    enabled: true
+    max_items: 500         # keep the best-paid N of a large feed
+  themuse:
+    enabled: true
+    queries:
+      - Software Engineering
+    location_groups: [core]
+    pages_per_query: 3
+```
+
+A parameter a feed *accepts* is not the same as one it *honours*: Himalayas returns identical
+rows for `search=kubernetes` and `search=nurse`, and Remotive ignores both `search` and `limit`.
+A feed counts as searchable here only when narrowing was observed to change the result.
 
 ### Adzuna reads an API
 
@@ -256,7 +299,8 @@ boards:
     enabled: true
     messages_per_label: 25   # newest N per label per run
     max_age_days: 14
-    mark_read: false         # flag mail that produced leads, so a rerun skips it
+    mark_read: true          # flag mail that produced leads as seen, and list only unseen
+                             # mail, so each run reads what has arrived since the last one
     labels:
       - label: job/discovery/indeed
         provider: indeed

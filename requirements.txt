@@ -2,6 +2,10 @@
 crawl4ai>=0.9.2
 pyyaml>=6.0
 beautifulsoup4>=4.12
+# The aggregator feeds include third-party XML fetched unauthenticated on a schedule —
+# devitjobs is 11 MB of it. The stdlib parser is not hardened against entity expansion, and
+# a hostile payload should read as a failed scan rather than take the process out.
+defusedxml>=0.7
 
 # Dashboard. Its interface is a React application in web/, built into dashboard/static/ —
 # nothing renders HTML here, so there is no template engine.

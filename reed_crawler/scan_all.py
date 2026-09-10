@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from board_config import load_config
+import aggregator_feeds
 import schedule
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,11 @@ COMMANDS = {
     "linkedin": ["reed_crawler/linkedin_pipeline.py", "scan", "--config", "config.yml"],
     "haystack": ["reed_crawler/haystack_pipeline.py", "scan", "--config", "config.yml"],
     "email": ["reed_crawler/email_pipeline.py", "scan", "--config", "config.yml"],
+    # The aggregator feeds are one module selected by --feed, so their entries are built from
+    # the same table the module reads rather than restated here. Every argv still carries the
+    # literal "config.yml" that command_for() replaces, and none carries --allow-disabled.
+    **{name: ["reed_crawler/aggregator_pipeline.py", "scan", "--feed", name, "--config", "config.yml"]
+       for name in aggregator_feeds.FEEDS},
 }
 
 BUSY_EXIT_CODE = 75

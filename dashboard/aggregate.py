@@ -8,13 +8,20 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "reed_crawler"))
+
+import scan_all
+
 OUTPUTS = ROOT / "outputs"
-BOARDS = ["reed", "totaljobs", "indeed", "talent", "adzuna", "haystack", "linkedin", "email"]
+# Every board that can be scanned is a board that can be read. Restating the list here is
+# what let it drift from scan_all.COMMANDS, which api.py already mixes with it in one reply.
+BOARDS = list(scan_all.COMMANDS)
 
 _STAMP = re.compile(r"_(\d{4}-\d{2}-\d{2}_\d{6})\.json$")
 

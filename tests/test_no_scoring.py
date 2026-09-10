@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "reed_crawler"))
 
 import adzuna_pipeline
 import haystack_pipeline
+import aggregator_pipeline
 import indeed_pipeline
 import linkedin_pipeline
 import reed_utils
@@ -27,6 +28,8 @@ LEAD_TYPES = [
     adzuna_pipeline.AdzunaLead,
     haystack_pipeline.HaystackLead,
     linkedin_pipeline.LinkedInLead,
+    # One entry covers every aggregator feed: they share a lead type and a module.
+    aggregator_pipeline.AggregatorLead,
 ]
 
 
@@ -39,7 +42,8 @@ def test_records_carry_no_score(lead_type) -> None:
 
 
 @pytest.mark.parametrize("module", [reed_utils, totaljobs_pipeline, talent_pipeline, indeed_pipeline,
-                                    adzuna_pipeline, haystack_pipeline, linkedin_pipeline],
+                                    adzuna_pipeline, haystack_pipeline, linkedin_pipeline,
+                                    aggregator_pipeline],
                          ids=lambda m: m.__name__)
 def test_no_board_computes_a_score(module) -> None:
     assert not hasattr(module, "score_job")
