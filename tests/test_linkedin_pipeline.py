@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "reed_crawler"))
 
 import email_pipeline
+import board_config
 import linkedin_pipeline
 
 SPEC = {"title": "senior software engineer", "location": "London, England, United Kingdom"}
@@ -97,3 +98,13 @@ def test_a_link_that_is_not_a_posting_yields_nothing() -> None:
 def test_an_error_body_is_not_read_as_zero_results() -> None:
     assert linkedin_pipeline.parse_search_cards("", SPEC) == []
     assert 429 in linkedin_pipeline.BLOCKED_STATUSES and 999 in linkedin_pipeline.BLOCKED_STATUSES
+
+
+def test_the_search_names_the_country_so_the_place_is_not_the_one_abroad() -> None:
+    """A bare place name resolves worldwide: `doncaster` returned ten Melbourne postings and
+    `sheffield` returned Texas, a third of every scan. Qualified, nine in ten come back UK."""
+    url = board_config.linkedin_search_url("principal engineer", "doncaster", 30, 7)
+
+    assert "location=doncaster%2C+United+Kingdom" in url
+    # Already qualified in config, and it is not said twice.
+    assert "location=leeds%2C+UK&" in board_config.linkedin_search_url("x", "leeds, UK", 30)

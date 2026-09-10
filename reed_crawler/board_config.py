@@ -148,15 +148,28 @@ def adzuna_search_url(title: str, location: str, distance: int, results_per_page
     return f"{BASE_ADZUNA}/{page}?{params}"
 
 
+def in_the_uk(location: str) -> str:
+    """A place name LinkedIn cannot mistake for its namesake abroad."""
+    place = (location or "").strip()
+    if not place or re.search(r"\b(uk|united kingdom|england|scotland|wales)\b", place, re.I):
+        return place
+    return f"{place}, United Kingdom"
+
+
 def linkedin_search_url(title: str, location: str, distance: int, max_age_days: int = 0, start: int = 0) -> str:
     """One page of LinkedIn guest search results.
 
     `f_TPR=r<seconds>` is the freshness filter, and it is not optional: an unfiltered first
     page was observed carrying adverts over eight months old alongside today's.
+
+    The place name is qualified because LinkedIn resolves a bare one worldwide: `doncaster`
+    returned ten Melbourne postings and `sheffield` returned Texas, so a third of this board's
+    output was the wrong hemisphere. Qualified, the same search returns nine UK results in ten.
+    Only this board needs it — the other search boards are UK sites and answer for the UK.
     """
     params = {
         "keywords": title,
-        "location": location,
+        "location": in_the_uk(location),
         "distance": distance,          # miles from `location`
         "pageNum": 0,
         "start": start,
