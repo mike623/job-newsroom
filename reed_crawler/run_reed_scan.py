@@ -14,7 +14,8 @@ import salary as salary_parser
 import run_record
 import scan_health
 import scan_lock
-from reed_utils import SearchSpec, dedupe_jobs, parse_jobs_from_markdown, write_report
+from lead import dedupe
+from reed_utils import SearchSpec, parse_jobs_from_markdown, write_report
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "reed"
@@ -116,7 +117,7 @@ async def main() -> None:
 
             for job in all_jobs:
                 salary_parser.apply_to(job)
-            deduped = sorted(dedupe_jobs(all_jobs), key=salary_parser.sort_key, reverse=True)
+            deduped = sorted(dedupe(all_jobs), key=salary_parser.sort_key, reverse=True)
 
             REPORTS.mkdir(parents=True, exist_ok=True)
             raw_json = REPORTS / f"reed_raw_{stamp}.json"

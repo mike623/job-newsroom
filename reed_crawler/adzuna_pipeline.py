@@ -23,11 +23,12 @@ import re
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
 from board_config import build_board_urls, load_config, jittered, raw_capture_stem, run_stamp
+from lead import Lead, dedupe, slug
 import salary as salary_parser
 import run_record
 import scan_health
@@ -39,41 +40,6 @@ RAW = OUT / "raw"
 REPORTS = OUT / "reports"
 
 TIMEOUT_SECONDS = 30
-
-
-@dataclass
-class AdzunaLead:
-    source: str
-    search_title: str
-    search_location: str
-    role_title: str
-    company: str
-    salary: str
-    location: str
-    contract: str
-    posted: str
-    url: str
-    job_id: str
-    raw_block: str
-    salary_min: int | None = None
-    salary_max: int | None = None
-    salary_period: str = ""
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-def slug(s: str, max_len: int = 80) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")[:max_len] or "unknown"
-
-
-def dedupe(leads: list[AdzunaLead]) -> list[AdzunaLead]:
-    seen = {}
-    for lead in leads:
-        key = lead.job_id or "|".join([lead.role_title.lower(), lead.company.lower(), lead.location.lower()])
-        if key not in seen:
-            seen[key] = lead
-    return list(seen.values())
 
 
 def credentials(cfg: dict) -> tuple[str, str]:
@@ -136,14 +102,14 @@ def contract_text(job: dict) -> str:
     return ", ".join(p.capitalize() for p in parts if p)
 
 
-def parse_results(payload: dict, spec: dict) -> list[AdzunaLead]:
+def parse_results(payload: dict, spec: dict) -> list[Lead]:
     leads = []
     for job in payload.get("results") or []:
         jid = str(job.get("id") or "")
         if not jid:
             continue
         low, high = job.get("salary_min"), job.get("salary_max")
-        leads.append(AdzunaLead(
+        leads.append(Lead(
             source="adzuna",
             search_title=spec["title"],
             search_location=spec["location"],
@@ -177,7 +143,7 @@ def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> P
         stamp = run_stamp()
         with run_record.record("adzuna", stamp) as findings:
             health = scan_health.RunHealth("adzuna")
-            all_leads: list[AdzunaLead] = []
+            all_leads: list[Lead] = []
             for spec in specs:
                 print(f"Querying Adzuna {spec['title']!r} / {spec['location']!r}: {spec['url']}")
                 response, payload = fetch(spec["url"], app_id, app_key)

@@ -270,7 +270,7 @@ def test_unrecognized_template_still_reports_the_url_without_inventing_fields():
 
 
 def test_dedupe_keeps_one_row_per_posting():
-    rows = [email.EmailLead(source="email", search_title="l", search_location="", role_title="A",
+    rows = [email.Lead(source="email", search_title="l", search_location="", role_title="A",
                             company="", salary="", location="", contract="", posted="", url="u",
                             job_id="indeed-1", raw_block="")] * 2
     assert len(email.dedupe(list(rows))) == 1

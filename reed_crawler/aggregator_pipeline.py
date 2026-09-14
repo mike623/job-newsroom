@@ -29,7 +29,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 from defusedxml import ElementTree
@@ -37,6 +37,7 @@ from defusedxml import ElementTree
 import aggregator_feeds
 from aggregator_feeds import FEEDS
 from board_config import build_board_urls, jittered, load_config, raw_capture_stem, run_stamp
+from lead import Lead, dedupe, slug
 import salary as salary_parser
 import run_record
 import scan_health
@@ -58,28 +59,6 @@ HEADERS = {
 
 
 @dataclass
-class AggregatorLead:
-    source: str
-    search_title: str
-    search_location: str
-    role_title: str
-    company: str
-    salary: str
-    location: str
-    contract: str
-    posted: str
-    url: str
-    job_id: str
-    raw_block: str
-    salary_min: int | None = None
-    salary_max: int | None = None
-    salary_period: str = ""
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-@dataclass
 class Response:
     """What scan_health classifies. The feed's body plays the part the crawled page plays."""
     success: bool
@@ -89,17 +68,15 @@ class Response:
     error_message: str = ""
 
 
-def slug(s: str, max_len: int = 80) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")[:max_len] or "unknown"
+def feed_identity(lead: Lead) -> str:
+    """What makes two feed rows the same posting.
 
-
-def dedupe(leads: list[AggregatorLead]) -> list[AggregatorLead]:
-    seen: dict[str, AggregatorLead] = {}
-    for lead in leads:
-        key = lead.job_id or lead.url or "|".join([lead.role_title.lower(), lead.company.lower()])
-        if key not in seen:
-            seen[key] = lead
-    return list(seen.values())
+    A feed row without an id is identified by its link, which for a feed is stable — the
+    per-feed attribution parameters are already stripped before a lead is kept. Location is
+    not part of the key: most feeds are remote-only and state none, so including it would
+    group every posting from one company together.
+    """
+    return lead.job_id or lead.url or "|".join([lead.role_title.lower(), lead.company.lower()])
 
 
 def fetch(url: str, feed: aggregator_feeds.Feed) -> tuple[Response, object]:
@@ -121,7 +98,7 @@ def fetch(url: str, feed: aggregator_feeds.Feed) -> tuple[Response, object]:
                         error_message=str(failure)), None
 
 
-def leads_from(payload: object, spec: dict, feed: aggregator_feeds.Feed) -> tuple[list[AggregatorLead], list]:
+def leads_from(payload: object, spec: dict, feed: aggregator_feeds.Feed) -> tuple[list[Lead], list]:
     """The page's records as leads, and the raw records so the caller can ask for more."""
     rows = feed.rows(payload)
     leads = []
@@ -129,7 +106,7 @@ def leads_from(payload: object, spec: dict, feed: aggregator_feeds.Feed) -> tupl
         fields = feed.lead(row, feed.label)
         if not fields:
             continue
-        lead = AggregatorLead(
+        lead = Lead(
             source=feed.name,
             search_title=spec["title"],
             search_location=spec["location"],
@@ -167,7 +144,7 @@ def scan(feed_name: str, cfg: dict, limit: int | None = None, allow_disabled: bo
         stamp = run_stamp()
         with run_record.record(feed_name, stamp) as findings:
             health = scan_health.RunHealth(feed_name)
-            all_leads: list[AggregatorLead] = []
+            all_leads: list[Lead] = []
             requests = 0
             for spec in specs:
                 query = "" if spec["title"] == feed.label else spec["title"]
@@ -199,7 +176,8 @@ def scan(feed_name: str, cfg: dict, limit: int | None = None, allow_disabled: bo
                     time.sleep(jittered(delay))
                 time.sleep(jittered(delay))
 
-            deduped = sorted(dedupe(all_leads), key=salary_parser.sort_key, reverse=True)
+            deduped = sorted(dedupe(all_leads, key=feed_identity),
+                             key=salary_parser.sort_key, reverse=True)
             if max_items:
                 deduped = deduped[:max_items]
             reports.mkdir(parents=True, exist_ok=True)

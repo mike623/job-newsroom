@@ -29,13 +29,14 @@ import re
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 from bs4 import BeautifulSoup
 
 from board_config import (build_board_urls, jittered, linkedin_search_url, load_config,
                           raw_capture_stem, run_stamp)
+from lead import Lead, dedupe, slug
 import salary as salary_parser
 import run_record
 import scan_health
@@ -60,41 +61,6 @@ HEADERS = {
     "user-agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
 }
-
-
-@dataclass
-class LinkedInLead:
-    source: str
-    search_title: str
-    search_location: str
-    role_title: str
-    company: str
-    salary: str
-    location: str
-    contract: str
-    posted: str
-    url: str
-    job_id: str
-    raw_block: str
-    salary_min: int | None = None
-    salary_max: int | None = None
-    salary_period: str = ""
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-def slug(s: str, max_len: int = 80) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")[:max_len] or "unknown"
-
-
-def dedupe(leads: list[LinkedInLead]) -> list[LinkedInLead]:
-    seen: dict[str, LinkedInLead] = {}
-    for lead in leads:
-        key = lead.job_id or "|".join([lead.role_title.lower(), lead.company.lower(), lead.location.lower()])
-        if key not in seen:
-            seen[key] = lead
-    return list(seen.values())
 
 
 @dataclass
@@ -134,7 +100,7 @@ def _text(node) -> str:
     return node.get_text(" ", strip=True) if node else ""
 
 
-def parse_search_cards(html: str, spec: dict) -> list[LinkedInLead]:
+def parse_search_cards(html: str, spec: dict) -> list[Lead]:
     """Parse leads out of one page of the guest fragment.
 
     Card structure is JobSpy's: `div.base-search-card` per result, the accessible title in
@@ -151,7 +117,7 @@ def parse_search_cards(html: str, spec: dict) -> list[LinkedInLead]:
         company = card.find("h4", class_="base-search-card__subtitle")
         meta = card.find("div", class_="base-search-card__metadata")
         posted = meta.find("time") if meta else None
-        lead = LinkedInLead(
+        lead = Lead(
             source="linkedin",
             search_title=spec["title"],
             search_location=spec["location"],
@@ -191,7 +157,7 @@ def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> P
         stamp = run_stamp()
         with run_record.record("linkedin", stamp) as findings:
             health = scan_health.RunHealth("linkedin")
-            all_leads: list[LinkedInLead] = []
+            all_leads: list[Lead] = []
             for spec in specs:
                 print(f"Querying LinkedIn {spec['title']!r} / {spec['location']!r}")
                 start = 0

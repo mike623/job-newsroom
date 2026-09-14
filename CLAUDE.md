@@ -75,7 +75,7 @@ config.yml → scan (per-board lock, jittered delays)
                      web/  →  React + shadcn/ui, built into dashboard/static/
 ```
 
-**Crawler modules.** `board_config.py` builds every board's URLs and owns `run_stamp`, `raw_capture_stem` and `jittered`. `salary.py` and `scan_lock.py` and `scan_health.py` are shared. Each board then has its own parsing: `reed_utils.py` + `run_reed_scan.py`, `totaljobs_pipeline.py`, `talent_pipeline.py`, `indeed_pipeline.py`, `adzuna_pipeline.py`, `haystack_pipeline.py`, `linkedin_pipeline.py`, `email_pipeline.py`, and `aggregator_pipeline.py` + `aggregator_feeds.py` for the feed boards.
+**Crawler modules.** `board_config.py` builds every board's URLs and owns `run_stamp`, `raw_capture_stem` and `jittered`. `lead.py` is the record every board produces — the report row's only definition — with `dedupe` and `slug`. `salary.py` and `scan_lock.py` and `scan_health.py` are shared. Each board then has its own parsing: `reed_utils.py` + `run_reed_scan.py`, `totaljobs_pipeline.py`, `talent_pipeline.py`, `indeed_pipeline.py`, `adzuna_pipeline.py`, `haystack_pipeline.py`, `linkedin_pipeline.py`, `email_pipeline.py`, and `aggregator_pipeline.py` + `aggregator_feeds.py` for the feed boards.
 
 **Adzuna is an API, not a crawl.** `adzuna.co.uk` answers every automated fetch with a CloudFront 403 — curl and headless Chromium alike, any user agent — so `adzuna_pipeline.py` reads Adzuna's free JSON search API instead. No crawl4ai, no browser, no card parsing, and pay arrives as numbers so `salary.py` is not asked to parse it back out of prose. Credentials (free from developer.adzuna.com) live in `boards.adzuna.app_id` / `app_key` or `ADZUNA_APP_ID` / `ADZUNA_APP_KEY`, and are attached at request time so they never reach a raw capture, a report or the log. Raw captures are `.json` here; everything downstream sees the same report shape as any other board.
 
@@ -93,7 +93,9 @@ config.yml → scan (per-board lock, jittered delays)
 
 **Runner modules.** `runner/scans.py` runs scans as subprocesses and persists their records; `runner/pool.py` bounds concurrency; `runner/app.py` exposes both over HTTP. Starting and following a scan are split deliberately: **only one process may spawn scans**, because `scan_lock` proves a lock live by signalling the pid that wrote it and that answer is meaningless across PID namespaces — two spawners scan the same board twice. Following is a file read (`run_record`, the per-run log), so the dashboard imports `runner.scans` directly for history, status and the live log stream, and calls the API only to start something. With `RUNNER_URL` unset there is no separate runner and the dashboard spawns in-process, which is how the project runs natively.
 
-**Duplicated by design.** `slug`, `dedupe`, `browser_config` and `crawl_config` are copy-pasted across the board modules with per-board variations. Each board's markup is quirky in its own way, and keeping them independent means a fix for Totaljobs cannot break Reed. When changing crawl behaviour, decide explicitly whether it applies to one board or all, and edit each copy.
+**Duplicated by design.** `browser_config`, `crawl_config` and the card parsers are copy-pasted across the board modules with per-board variations. Each board's markup is quirky in its own way, and keeping them independent means a fix for Totaljobs cannot break Reed. When changing crawl behaviour, decide explicitly whether it applies to one board or all, and edit each copy.
+
+This covers what *varies*, and only that. `slug` and `dedupe` were on this list and were measured to be byte-identical in every board — nothing was being isolated, and a fix to either was nine edits with one of them forgotten. Both now live in `lead.py` with the record they operate on. Before copying something per board, check that the copies actually differ.
 
 ## Invariants
 

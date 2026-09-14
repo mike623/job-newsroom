@@ -5,7 +5,6 @@ import asyncio
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -14,6 +13,7 @@ from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
 from board_config import build_board_urls, load_config, jittered, raw_capture_stem, run_stamp
+from lead import Lead, dedupe, slug
 import salary as salary_parser
 import run_record
 import scan_health
@@ -27,32 +27,6 @@ REPORTS = OUT / "reports"
 DEFAULT_CAREER_OPS = Path(os.environ.get("CAREER_OPS_WORKSPACE") or ROOT.parent / "career-ops")
 
 
-@dataclass
-class IndeedLead:
-    source: str
-    search_title: str
-    search_location: str
-    role_title: str
-    company: str
-    salary: str
-    location: str
-    contract: str
-    posted: str
-    url: str
-    job_id: str
-    raw_block: str
-    salary_min: int | None = None
-    salary_max: int | None = None
-    salary_period: str = ""
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-def slug(s: str, max_len: int = 80) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")[:max_len] or "unknown"
-
-
 def indeed_job_id(url: str) -> str:
     qs = parse_qs(urlparse(url).query)
     if qs.get("jk"):
@@ -64,15 +38,6 @@ def indeed_job_id(url: str) -> str:
 def canonical_job_url(url: str) -> str:
     jid = indeed_job_id(url)
     return f"https://uk.indeed.com/viewjob?jk={jid}" if jid else url
-
-
-def dedupe(leads: list[IndeedLead]) -> list[IndeedLead]:
-    seen = {}
-    for lead in leads:
-        key = lead.job_id or "|".join([lead.role_title.lower(), lead.company.lower(), lead.location.lower()])
-        if key not in seen:
-            seen[key] = lead
-    return list(seen.values())
 
 
 def browser_config(cfg: dict) -> BrowserConfig:
@@ -119,7 +84,7 @@ def _text(node) -> str:
     return node.get_text(" ", strip=True) if node else ""
 
 
-def parse_search_cards(html: str, spec: dict) -> list[IndeedLead]:
+def parse_search_cards(html: str, spec: dict) -> list[Lead]:
     """Parse Indeed's search cards out of the page HTML.
 
     Everything worth having is behind a stable test id, so this needs none of the positional
@@ -129,7 +94,7 @@ def parse_search_cards(html: str, spec: dict) -> list[IndeedLead]:
     if not html:
         return []
     soup = BeautifulSoup(html, "html.parser")
-    leads: list[IndeedLead] = []
+    leads: list[Lead] = []
     for card in soup.select(CARD_SELECTOR):
         anchor = card.select_one("[data-jk]")
         jid = (anchor or {}).get("data-jk", "") if anchor else ""
@@ -144,7 +109,7 @@ def parse_search_cards(html: str, spec: dict) -> list[IndeedLead]:
                 contract = label
                 break
 
-        leads.append(IndeedLead(
+        leads.append(Lead(
             source="indeed",
             search_title=spec["title"],
             search_location=spec["location"],
@@ -161,13 +126,13 @@ def parse_search_cards(html: str, spec: dict) -> list[IndeedLead]:
     return leads
 
 
-def parse_result(result, spec: dict) -> list[IndeedLead]:
+def parse_result(result, spec: dict) -> list[Lead]:
     """Prefer card parsing; fall back to the link graph if the markup is unrecognised."""
     cards = parse_search_cards(result.html or "", spec)
     return cards if cards else parse_links(result, spec)
 
 
-def parse_links(result, spec: dict) -> list[IndeedLead]:
+def parse_links(result, spec: dict) -> list[Lead]:
     leads = []
     for _, arr in (result.links or {}).items():
         for link in arr or []:
@@ -183,7 +148,7 @@ def parse_links(result, spec: dict) -> list[IndeedLead]:
                 role = "Unknown role"
             else:
                 role = text
-            leads.append(IndeedLead("indeed", spec["title"], spec["location"], role, "", "", "", "", "", canonical_job_url(url), jid, text))
+            leads.append(Lead("indeed", spec["title"], spec["location"], role, "", "", "", "", "", canonical_job_url(url), jid, text))
     return leads
 
 

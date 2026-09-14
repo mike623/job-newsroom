@@ -29,12 +29,12 @@ import re
 import subprocess
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qs
 
 from board_config import load_config, raw_capture_stem, run_stamp
+from lead import Lead, dedupe, slug
 import salary as salary_parser
 import run_record
 import scan_lock
@@ -96,34 +96,8 @@ def haystack_job_uuid(url: str) -> str:
     return found.group(1).lower() if found else ""
 
 
-@dataclass
-class EmailLead:
-    source: str
-    search_title: str
-    search_location: str
-    role_title: str
-    company: str
-    salary: str
-    location: str
-    contract: str
-    posted: str
-    url: str
-    job_id: str
-    raw_block: str
-    salary_min: int | None = None
-    salary_max: int | None = None
-    salary_period: str = ""
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
 class MailError(RuntimeError):
     """himalaya could not answer — not configured, not reachable, or no such label."""
-
-
-def slug(s: str, max_len: int = 80) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")[:max_len] or "unknown"
 
 
 def provider_from_sender(addr: str) -> str:
@@ -714,7 +688,7 @@ def location_from_subject(subject: str) -> str:
     return "Remote UK" if re.search(r"remote.*uk|uk.*remote", s, re.I) else ""
 
 
-def leads_from_message(meta: dict, envelope: dict, body: str, max_urls: int) -> tuple[list[EmailLead], str]:
+def leads_from_message(meta: dict, envelope: dict, body: str, max_urls: int) -> tuple[list[Lead], str]:
     """One mail's leads, plus the id of the template that read it ("" when unrecognised)."""
     sender = (envelope.get("from") or {}).get("addr") or ""
     # Sender wins over the label: mail gets filed by hand and lands in the wrong folder.
@@ -748,7 +722,7 @@ def leads_from_message(meta: dict, envelope: dict, body: str, max_urls: int) -> 
         job = per_job.get(url, {})
         role_title = job.get("title") or (subject_title if single else "Job lead (email)")
         company_name = job.get("company") or subject_company or board
-        leads.append(EmailLead(
+        leads.append(Lead(
             source="email",
             search_title=meta["label"],
             search_location="",
@@ -763,13 +737,6 @@ def leads_from_message(meta: dict, envelope: dict, body: str, max_urls: int) -> 
             raw_block=context,
         ))
     return leads, (template["id"] if template else "")
-
-
-def dedupe(leads: list[EmailLead]) -> list[EmailLead]:
-    seen: dict[str, EmailLead] = {}
-    for lead in leads:
-        seen.setdefault(lead.job_id, lead)
-    return list(seen.values())
 
 
 def labels_from(cfg: dict) -> list[dict]:
@@ -804,7 +771,7 @@ def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False,
     with scan_lock.hold("email"):
         stamp = run_stamp()
         with run_record.record("email", stamp) as findings:
-            all_leads: list[EmailLead] = []
+            all_leads: list[Lead] = []
             failures: list[str] = []
             templates: dict[str, int] = {}
             unrecognized: list[str] = []
@@ -855,7 +822,10 @@ def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False,
                 raise SystemExit(f"email: no label could be read ({', '.join(failures)}). "
                                  "Check that himalaya is installed and configured.")
 
-            deduped = sorted(dedupe(all_leads), key=salary_parser.sort_key, reverse=True)
+            # The id is always derived from the posting URL here, so it is the whole identity:
+            # the same advert forwarded by two providers is one job, whatever the mails called it.
+            deduped = sorted(dedupe(all_leads, key=lambda lead: lead.job_id),
+                             key=salary_parser.sort_key, reverse=True)
             REPORTS.mkdir(parents=True, exist_ok=True)
             raw_path = REPORTS / f"email_raw_{stamp}.json"
             dedup_path = REPORTS / f"email_deduped_{stamp}.json"

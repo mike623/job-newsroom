@@ -5,7 +5,6 @@ import asyncio
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
@@ -14,6 +13,7 @@ import yaml
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
 from board_config import build_board_urls, load_config, jittered, raw_capture_stem, run_stamp
+from lead import Lead, dedupe, slug
 import salary as salary_parser
 import run_record
 import scan_health
@@ -27,44 +27,9 @@ REPORTS = OUT / "reports"
 DEFAULT_CAREER_OPS = Path(os.environ.get("CAREER_OPS_WORKSPACE") or ROOT.parent / "career-ops")
 
 
-@dataclass
-class TotaljobsLead:
-    source: str
-    search_title: str
-    search_location: str
-    role_title: str
-    company: str
-    salary: str
-    location: str
-    contract: str
-    posted: str
-    url: str
-    job_id: str
-    raw_block: str
-    salary_min: int | None = None
-    salary_max: int | None = None
-    salary_period: str = ""
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-def slug(s: str, max_len: int = 80) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")[:max_len] or "unknown"
-
-
 def totaljobs_job_id(url: str) -> str:
     m = re.search(r"job(\d+)", url)
     return m.group(1) if m else ""
-
-
-def dedupe(leads: list[TotaljobsLead]) -> list[TotaljobsLead]:
-    seen: dict[str, TotaljobsLead] = {}
-    for lead in leads:
-        key = lead.job_id or "|".join([lead.role_title.lower(), lead.company.lower(), lead.location.lower()])
-        if key not in seen:
-            seen[key] = lead
-    return list(seen.values())
 
 
 def crawl_config(cfg: dict) -> CrawlerRunConfig:
@@ -122,14 +87,14 @@ def _card_blocks(markdown: str) -> list[tuple[str, str, list[str]]]:
     return blocks
 
 
-def parse_search_cards(markdown: str, spec: dict) -> list[TotaljobsLead]:
+def parse_search_cards(markdown: str, spec: dict) -> list[Lead]:
     """Parse the search cards themselves, rather than harvesting the page's link graph.
 
     Every observed card renders exactly four lines before a literal "more", in the order
     company / location / salary / snippet, then the posted date. Anchoring on "more" means a
     layout change yields blank fields instead of silently shifting a snippet into the salary.
     """
-    leads: list[TotaljobsLead] = []
+    leads: list[Lead] = []
     for title, url, body in _card_blocks(markdown):
         url = urljoin(spec["url"], url)
         if "totaljobs.com/job/" not in url:
@@ -152,7 +117,7 @@ def parse_search_cards(markdown: str, spec: dict) -> list[TotaljobsLead]:
                 salary = head[2]
             posted = next((t for t in tail if t.lower() not in CARD_BADGES), "")
 
-        leads.append(TotaljobsLead(
+        leads.append(Lead(
             source="totaljobs",
             search_title=spec["title"],
             search_location=spec["location"],
@@ -169,7 +134,7 @@ def parse_search_cards(markdown: str, spec: dict) -> list[TotaljobsLead]:
     return leads
 
 
-def parse_result(result, spec: dict) -> list[TotaljobsLead]:
+def parse_result(result, spec: dict) -> list[Lead]:
     """Prefer card parsing; fall back to the link graph if the markdown shape is unrecognised."""
     cards = parse_search_cards(str(result.markdown or ""), spec)
     if cards:
@@ -177,7 +142,7 @@ def parse_result(result, spec: dict) -> list[TotaljobsLead]:
     return parse_search_links(result, spec, str(result.markdown or ""))
 
 
-def parse_search_links(result, spec: dict, markdown: str) -> list[TotaljobsLead]:
+def parse_search_links(result, spec: dict, markdown: str) -> list[Lead]:
     links = []
     for group, arr in (result.links or {}).items():
         for link in arr or []:
@@ -189,7 +154,7 @@ def parse_search_links(result, spec: dict, markdown: str) -> list[TotaljobsLead]
             jid = totaljobs_job_id(url)
             if not jid:
                 continue
-            links.append(TotaljobsLead(
+            links.append(Lead(
                 source="totaljobs",
                 search_title=spec["title"],
                 search_location=spec["location"],
@@ -218,7 +183,7 @@ async def scan_searches(cfg: dict, limit: int | None = None) -> Path:
         stamp = run_stamp()
         with run_record.record("totaljobs", stamp) as findings:
             health = scan_health.RunHealth("totaljobs")
-            all_leads: list[TotaljobsLead] = []
+            all_leads: list[Lead] = []
             async with AsyncWebCrawler(config=browser_config(cfg)) as crawler:
                 for spec in specs:
                     print(f"Crawling Totaljobs {spec['title']!r} / {spec['location']!r}: {spec['url']}")

@@ -18,7 +18,6 @@ import argparse
 import asyncio
 import json
 import re
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -26,6 +25,7 @@ from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
 from board_config import build_board_urls, load_config, jittered, raw_capture_stem, run_stamp
+from lead import Lead, dedupe, slug
 import salary as salary_parser
 import run_record
 import scan_health
@@ -40,47 +40,12 @@ REPORTS = OUT / "reports"
 SEARCH_ERROR = "Something went wrong loading jobs"
 
 
-@dataclass
-class HaystackLead:
-    source: str
-    search_title: str
-    search_location: str
-    role_title: str
-    company: str
-    salary: str
-    location: str
-    contract: str
-    posted: str
-    url: str
-    job_id: str
-    raw_block: str
-    salary_min: int | None = None
-    salary_max: int | None = None
-    salary_period: str = ""
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-def slug(s: str, max_len: int = 80) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")[:max_len] or "unknown"
-
-
 JOB_HREF = re.compile(r"/jobs/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
 
 
 def haystack_job_id(url: str) -> str:
     m = JOB_HREF.search(url or "")
     return m.group(1) if m else ""
-
-
-def dedupe(leads: list[HaystackLead]) -> list[HaystackLead]:
-    seen: dict[str, HaystackLead] = {}
-    for lead in leads:
-        key = lead.job_id or "|".join([lead.role_title.lower(), lead.company.lower(), lead.location.lower()])
-        if key not in seen:
-            seen[key] = lead
-    return list(seen.values())
 
 
 def crawl_config(cfg: dict) -> CrawlerRunConfig:
@@ -131,14 +96,14 @@ def _icon_value(card, icon: str) -> str:
     return span.get_text(" ", strip=True) if span else ""
 
 
-def parse_search_cards(html: str, spec: dict) -> list[HaystackLead]:
+def parse_search_cards(html: str, spec: dict) -> list[Lead]:
     """Parse job cards out of the rendered search HTML.
 
     Markdown is unusable here: Haystack emits a whole card as one link whose text concatenates
     title, company, location, salary and posted date with nothing between them.
     """
     soup = BeautifulSoup(html or "", "html.parser")
-    leads: list[HaystackLead] = []
+    leads: list[Lead] = []
     for anchor in soup.find_all("a", href=JOB_HREF):
         url = urljoin(spec["url"], anchor.get("href") or "")
         jid = haystack_job_id(url)
@@ -146,7 +111,7 @@ def parse_search_cards(html: str, spec: dict) -> list[HaystackLead]:
             continue
         heading = anchor.find(["h2", "h3"])
         fields = {name: _icon_value(anchor, icon) for icon, name in CARD_ICON_FIELDS.items()}
-        leads.append(HaystackLead(
+        leads.append(Lead(
             source="haystack",
             search_title=spec["title"],
             search_location=spec["location"],
@@ -178,7 +143,7 @@ async def scan(cfg: dict, limit: int | None = None) -> Path:
         stamp = run_stamp()
         with run_record.record("haystack", stamp) as findings:
             health = scan_health.RunHealth("haystack")
-            all_leads: list[HaystackLead] = []
+            all_leads: list[Lead] = []
             async with AsyncWebCrawler(config=browser_config(cfg)) as crawler:
                 for spec in specs:
                     print(f"Crawling Haystack {spec['title']!r} / {spec['location']!r}: {spec['url']}")

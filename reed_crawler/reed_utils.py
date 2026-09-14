@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin
 
 import salary
+from lead import Lead
 
 BASE = "https://www.reed.co.uk"
 
@@ -37,28 +38,6 @@ class SearchSpec:
         return safe_name(self.title, self.location)
 
 
-@dataclass
-class Job:
-    source: str
-    search_title: str
-    search_location: str
-    role_title: str
-    company: str
-    salary: str
-    location: str
-    contract: str
-    posted: str
-    url: str
-    job_id: str
-    raw_block: str
-    salary_min: int | None = None
-    salary_max: int | None = None
-    salary_period: str = ""
-
-    def to_dict(self):
-        return asdict(self)
-
-
 def link_target(destination: str) -> str:
     """The href out of a markdown link target.
 
@@ -74,10 +53,10 @@ def extract_job_id(url: str) -> str:
     return m.group(1) if m else ""
 
 
-def parse_jobs_from_markdown(markdown: str, spec: SearchSpec) -> list[Job]:
+def parse_jobs_from_markdown(markdown: str, spec: SearchSpec) -> list[Lead]:
     # Reed result items usually start with Markdown H2 link lines.
     pattern = re.compile(r"^## \[([^\]]+)\]\(([^\)]+)\).*?(?=^## \[|\Z)", re.M | re.S)
-    jobs: list[Job] = []
+    jobs: list[Lead] = []
     for match in pattern.finditer(markdown):
         title = match.group(1).strip()
         url = urljoin(BASE, link_target(match.group(2)))
@@ -103,7 +82,7 @@ def parse_jobs_from_markdown(markdown: str, spec: SearchSpec) -> list[Job]:
         if not extract_job_id(url):
             continue
 
-        jobs.append(Job(
+        jobs.append(Lead(
             source="reed",
             search_title=spec.title,
             search_location=spec.location,
@@ -120,16 +99,7 @@ def parse_jobs_from_markdown(markdown: str, spec: SearchSpec) -> list[Job]:
     return jobs
 
 
-def dedupe_jobs(jobs: list[Job]) -> list[Job]:
-    seen: dict[str, Job] = {}
-    for job in jobs:
-        key = job.job_id or "|".join([job.role_title.lower(), job.company.lower(), job.location.lower()])
-        if key not in seen:
-            seen[key] = job
-    return list(seen.values())
-
-
-def write_report(jobs: list[Job], out_md: Path) -> None:
+def write_report(jobs: list[Lead], out_md: Path) -> None:
     lines = ["# Reed job crawl report", "", f"Deduped jobs: {len(jobs)}", "", "## Highest advertised salary", ""]
     for idx, job in enumerate(sorted(jobs, key=salary.sort_key, reverse=True)[:30], 1):
         lines += [
