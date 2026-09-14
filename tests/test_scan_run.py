@@ -10,7 +10,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "reed_crawler"))
 
+import run_record
 import scan_health
+import scan_lock
 import scan_run
 from lead import Lead
 
@@ -24,7 +26,16 @@ def lead(job_id: str = "1", salary: str = "", pay: int | None = None) -> Lead:
 
 @pytest.fixture
 def outputs(tmp_path, monkeypatch):
+    """A scan writes to four places. All of them belong under tmp_path here.
+
+    `scan_run.begin` takes a real lock and writes a real run record, which is the point — they
+    are what a scan is. Left pointing at the repo, these tests would file runs for a board
+    called "test" into the history the dashboard reads.
+    """
     monkeypatch.setattr(scan_run, "OUTPUTS", tmp_path)
+    monkeypatch.setattr(run_record, "STATE", tmp_path / "state")
+    monkeypatch.setattr(run_record, "RUNS_FILE", tmp_path / "state" / "runs.json")
+    monkeypatch.setattr(scan_lock, "LOCK_DIR", tmp_path / "state" / "locks")
     return tmp_path
 
 
