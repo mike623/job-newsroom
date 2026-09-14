@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import random
 import re
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus, urlencode
 
@@ -191,30 +191,6 @@ def haystack_search_url(title: str, location: str) -> str:
     return f"{BASE_HAYSTACK}/jobs?q={quote_plus(title)}&location={quote_plus(location)}"
 
 
-def paired(titles: list[str], locations: list[str], rotation: int = 0) -> list[tuple[str, str]]:
-    """Every title against every location, ordered so a truncated list still covers both.
-
-    `max_pages_per_run` caps the number of searches, and the obvious nested loop puts every
-    combination of the first title first — so a cap below the product spent all of its slots
-    on one title and the rest were never searched at all. Five titles across four locations
-    under a cap of four asked only for "applied ai engineer", four times.
-
-    Pairing them cyclically instead means the first N rows carry N distinct titles and N
-    distinct locations, and the full sequence is still the complete product exactly once.
-
-    `rotation` advances which location each title is paired with. Without it the pairing is
-    fixed, so a cap equal to the title count would search "principal engineer" in Manchester
-    every run and in Leeds never — combinations would be skipped permanently rather than
-    deferred. Rotating by the day means a cap that covers the titles covers the locations too,
-    over as many runs as there are locations.
-    """
-    if not titles or not locations:
-        return []
-    return [(title, locations[(index + offset + rotation) % len(locations)])
-            for offset in range(len(locations))
-            for index, title in enumerate(titles)]
-
-
 def build_board_urls(cfg: dict, board: str) -> list[dict]:
     board_cfg = cfg["boards"][board]
     if not board_cfg.get("enabled", False):
@@ -226,10 +202,8 @@ def build_board_urls(cfg: dict, board: str) -> list[dict]:
     if board in aggregator_feeds.FEEDS:
         # Feeds, not searches: one row per configured query, or a single row for a feed that
         # takes no query parameter at all. See reed_crawler/aggregator_feeds.py.
-        rows = aggregator_feeds.build_urls(board, board_cfg,
-                                           board_titles(cfg, board), board_locations(cfg, board))
-        max_pages = board_cfg.get("max_pages_per_run")
-        return rows[: int(max_pages)] if max_pages else rows
+        return aggregator_feeds.build_urls(board, board_cfg,
+                                          board_titles(cfg, board), board_locations(cfg, board))
     if board_cfg.get("search_params"):
         rows = []
         for item in board_cfg.get("search_params") or []:
@@ -243,16 +217,12 @@ def build_board_urls(cfg: dict, board: str) -> list[dict]:
             else:
                 raise ValueError(f"Custom search_params are not supported for board: {board}")
             rows.append({"board": board, "title": keyword, "location": location, "url": url})
-        max_pages = board_cfg.get("max_pages_per_run")
-        return rows[: int(max_pages)] if max_pages else rows
+        return rows
 
     titles = board_titles(cfg, board)
     locations = board_locations(cfg, board)
     rows = []
-    # The day is the rotation, so a run today and a run tomorrow pair the same titles with
-    # different places. JOB_CRAWLER_ROTATION pins it for tests and for reproducing a run.
-    rotation = int(os.environ.get("JOB_CRAWLER_ROTATION") or date.today().toordinal())
-    for title, location in paired(titles, locations, rotation):
+    for title, location in [(t, place) for t in titles for place in locations]:
         if board == "reed":
             url = reed_search_url(title, location, int(board_cfg.get("proximity", 50)))
         elif board == "totaljobs":
@@ -272,8 +242,7 @@ def build_board_urls(cfg: dict, board: str) -> list[dict]:
         else:
             raise ValueError(f"Unsupported board: {board}")
         rows.append({"board": board, "title": title, "location": location, "url": url})
-    max_pages = board_cfg.get("max_pages_per_run")
-    return rows[: int(max_pages)] if max_pages else rows
+    return rows
 
 
 def jittered(seconds: float, spread: float = 0.35) -> float:

@@ -78,15 +78,10 @@ async def main() -> None:
     args = ap.parse_args()
 
     cfg = load_config(ROOT / args.config)
-    reed_cfg = cfg.get("boards", {}).get("reed", {})
     crawl_cfg = cfg.get("crawl", {})
     specs = build_specs(cfg)
     if args.limit:
         specs = specs[: args.limit]
-    elif reed_cfg.get("max_pages_per_run"):
-        specs = specs[: int(reed_cfg["max_pages_per_run"])]
-    elif cfg.get("max_pages_per_run"):
-        specs = specs[: int(cfg["max_pages_per_run"])]
 
     browser_config = BrowserConfig(
         headless=bool(crawl_cfg.get("headless", True)),

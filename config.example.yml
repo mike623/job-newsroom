@@ -38,7 +38,6 @@ boards:
     location_groups:
       - core
     proximity: 50
-    max_pages_per_run: 8   # Slow mode: fewer search pages per run to reduce ban risk.
     full_jd:
       enabled: true
       top_n: 10            # Slow mode: fewer detail pages per run.
@@ -51,7 +50,6 @@ boards:
     location_groups:
       - core
     radius: 30
-    max_pages_per_run: 5  # cap on the number of searches; >= the title count, so every title is asked
     full_jd:
       enabled: true
       top_n: 5
@@ -66,7 +64,6 @@ boards:
     location_groups:
       - core
     radius: 50
-    max_pages_per_run: 5  # cap on the number of searches; >= the title count, so every title is asked
     full_jd:
       enabled: true
       top_n: 3
@@ -88,7 +85,6 @@ boards:
       - primary
     location_groups:
       - core
-    max_pages_per_run: 4
 
   adzuna:
     # Read from Adzuna's JSON API, not by crawling: adzuna.co.uk answers automated fetches
@@ -103,7 +99,6 @@ boards:
       - core
     distance: 30           # kilometres from the location
     results_per_page: 50   # the API's maximum
-    max_pages_per_run: 20  # an API with credentials, not a crawl: the full title x location product
 
   linkedin:
     # Read from LinkedIn's unauthenticated guest endpoint, not by crawling: there is no
@@ -118,8 +113,7 @@ boards:
       - core
     distance: 30           # miles from the location
     max_age_days: 7        # f_TPR freshness filter; without it page one carries stale adverts
-    pages_per_search: 2    # ten cards a page, so 2 is ~20 leads per search
-    max_pages_per_run: 5  # cap on the number of searches; >= the title count, so every title is asked
+    pages_per_search: 1    # ten cards a page; the only cap on this board's request count
     delay_seconds: 60
 
   talent:
@@ -127,7 +121,6 @@ boards:
     # Talent.com can return an unhydrated shell for /jobs?k=...&l=...; supplying a
     # real result `id` from a browser session forces the result list to hydrate.
     enabled: true
-    max_pages_per_run: 2
     delay_seconds: 60
     search_params:
       - k: Senior Software Engineer
@@ -215,7 +208,6 @@ locations:
   - london
   - manchester
 proximity: 50
-max_pages_per_run: 16
 delay_seconds: 2
 crawl_full_job_pages: false
 top_n_full_pages: 30

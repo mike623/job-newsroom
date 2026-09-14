@@ -168,7 +168,6 @@ boards:
     title_groups: [primary]
     location_groups: [core]
     proximity: 50
-    max_pages_per_run: 8
 ```
 
 Check what URLs your config produces without fetching anything:
@@ -178,8 +177,10 @@ python reed_crawler/board_config.py
 ```
 
 > [!WARNING]
-> The low `max_pages_per_run` and multi-second `delay_seconds` defaults are deliberate. Job boards
-> block scrapers that move quickly. Raise them gradually and expect to be blocked if you don't.
+> The multi-second `delay_seconds` defaults are deliberate. Job boards block scrapers that move
+> quickly. A board asks for every title against every location, so the delay — and, where a board
+> pages, `pages_per_search` — is what bounds a scan. Raise the rate gradually and expect to be
+> blocked if you don't.
 
 ## The sources
 
@@ -341,7 +342,6 @@ Talent.com can return an unhydrated shell. Supplying a live result `id` forces t
 ```yaml
 boards:
   talent:
-    max_pages_per_run: 2
     delay_seconds: 60
     search_params:
       - k: Senior Software Engineer

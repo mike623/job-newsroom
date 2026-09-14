@@ -125,11 +125,13 @@ def test_a_feed_that_must_be_narrowed_refuses_to_scan_the_whole_board() -> None:
     assert "boards.themuse.queries" in str(refused.value)
 
 
-def test_max_pages_per_run_caps_the_number_of_queries() -> None:
-    cfg = {"search": {}, "boards": {"themuse": {"enabled": True, "max_pages_per_run": 1,
+def test_every_configured_query_becomes_a_search() -> None:
+    # There is no cap on searches: a feed asks for everything its config names, and
+    # `pages_per_query` is the only thing bounding a scan's request count.
+    cfg = {"search": {}, "boards": {"themuse": {"enabled": True,
                                                 "queries": ["one", "two", "three"]}}}
 
-    assert len(board_config.build_board_urls(cfg, "themuse")) == 1
+    assert len(board_config.build_board_urls(cfg, "themuse")) == 3
 
 
 # --- one record becomes one lead --------------------------------------------------------

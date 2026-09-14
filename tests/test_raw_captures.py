@@ -43,28 +43,3 @@ def test_scan_entrypoints_stamp_their_raw_captures() -> None:
         writes = re.findall(r"\((?:RAW|raw_dir) / f\"\{(\w+)\}\.[^\"]+\"\)", source)
         assert writes, f"{name}: found no raw capture writes to check"
         assert all(w == "stem" for w in writes), f"{name}: raw capture written without a run stamp: {writes}"
-
-
-def test_a_capped_board_covers_every_title_and_rotates_the_places() -> None:
-    """A cap below the title x location product must defer combinations, never skip them.
-
-    The nested loop this replaced put every combination of the first title first, so a cap of
-    four asked for one title in four places and never reached the other four titles.
-    """
-    titles, places = ["a", "b", "c", "d", "e"], ["w", "x", "y", "z"]
-
-    today = board_config.paired(titles, places, rotation=0)
-    assert set(today) == {(t, p) for t in titles for p in places}, "the full product, once"
-    assert len(today) == len(set(today)) == 20
-
-    # A cap equal to the title count still asks for every title, in four different places.
-    capped = today[:len(titles)]
-    assert {t for t, _ in capped} == set(titles)
-    assert len({p for _, p in capped}) == len(places)
-
-    # And tomorrow's run pairs them differently, so no combination waits forever.
-    seen = {t: set() for t in titles}
-    for rotation in range(len(places)):
-        for title, place in board_config.paired(titles, places, rotation)[:len(titles)]:
-            seen[title].add(place)
-    assert all(places == sorted(found) for found in seen.values())

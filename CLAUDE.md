@@ -100,7 +100,7 @@ config.yml → scan (per-board lock, jittered delays)
 Each of these was learned from a bug. Breaking one silently corrupts data or gets a board blocked.
 
 - **Per-host request rate is the safety property, not worker count.** Boards are separate hosts, so scanning them concurrently is free. Within a host the limit is `max(1, len(proxies))` — splitting by search term changes *what* is asked for, not *how often*, because rate limits are per IP. Never let pool size govern this.
-- **A cap on searches defers combinations, it does not skip them.** `max_pages_per_run` truncates the list `build_board_urls` returns, and a nested title-then-location loop puts every combination of the first title at the front — five titles across four locations under a cap of four asked only for `applied ai engineer`, four times, and 78 of every 100 intended searches never ran. `paired()` cycles the two axes instead, so a cap equal to the title count still covers every title, and rotates by the day so each title reaches every location over as many runs as there are locations. Set `JOB_CRAWLER_ROTATION` to pin it.
+- **A board asks for everything its config names.** There is no cap on the number of searches: every title in the board's `title_groups` is asked against every location in its `location_groups`, every run. `max_pages_per_run` used to truncate that list, and a truncated product silently starved whole titles — Reed asked 2 of its 5 titles for months, Talent 2 of its 4 rows. The cap was deleted rather than made fair; what bounds a scan now is `delay_seconds` and, on a board that pages, `pages_per_search` / `pages_per_query`. See `docs/adr/0001-no-cap-on-searches.md` before reintroducing one.
 - **Raw captures carry the run stamp.** They were once written to a deterministic name, so each scan destroyed the previous evidence for that search and concurrent scans corrupted each other. `raw_capture_stem` exists for this.
 - **An empty page body is a failure, not zero results.** A crawl can return success with nothing in it. `scan_health` classifies this so a board cannot silently stop producing data.
 - **One scan per board.** The lock lives in the scan entrypoints so the external cron inherits it without being modified. Exit 75 means busy, not broken.
@@ -127,7 +127,7 @@ Each of these was learned from a bug. Breaking one silently corrupts data or get
 
 `config.yml` is the single input; `config.example.yml` is the committed template and `config.yml` is gitignored. Board sections reference named groups from `search.titles` / `search.locations`. The flat top-level keys at the bottom are a legacy fallback still read by `run_reed_scan.build_specs`.
 
-`tests/test_talent_pipeline.py` asserts against **`config.example.yml`**, so editing its talent block or `max_pages_per_run` breaks that test — update both together, and keep the two files structurally in sync.
+`tests/test_talent_pipeline.py` asserts against **`config.example.yml`**, so editing its talent block breaks that test — update both together, and keep the two files structurally in sync.
 
 Keys that no longer do anything: every board's `full_jd` block, and Indeed's `reject_phrases`, which only ever ran against job-description text.
 
