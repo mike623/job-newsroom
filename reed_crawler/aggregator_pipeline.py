@@ -36,15 +36,13 @@ from defusedxml import ElementTree
 
 import aggregator_feeds
 from aggregator_feeds import FEEDS
-from board_config import build_board_urls, jittered, load_config, raw_capture_stem, run_stamp
-from lead import Lead, dedupe, slug
+from board_config import build_board_urls, jittered, load_config, raw_capture_stem
+from lead import Lead, slug
 import salary as salary_parser
-import run_record
 import scan_health
-import scan_lock
+import scan_run
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUTS = ROOT / "outputs"
 
 TIMEOUT_SECONDS = 45
 
@@ -121,11 +119,7 @@ def leads_from(payload: object, spec: dict, feed: aggregator_feeds.Feed) -> tupl
 
 def scan(feed_name: str, cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> Path:
     feed = FEEDS[feed_name]
-    board = (cfg.get("boards") or {}).get(feed_name) or {}
-    if not board.get("enabled") and not allow_disabled:
-        raise SystemExit(
-            f"{feed_name} is disabled in config.yml. Use --allow-disabled for manual smoke tests."
-        )
+    board = scan_run.enabled(cfg, feed_name, allow_disabled)
     specs = build_board_urls(
         {**cfg, "boards": {**cfg.get("boards", {}), feed_name: {**board, "enabled": True}}},
         feed_name,
@@ -133,63 +127,44 @@ def scan(feed_name: str, cfg: dict, limit: int | None = None, allow_disabled: bo
     if limit:
         specs = specs[:limit]
 
-    out = OUTPUTS / feed_name
-    raw_dir, reports = out / "raw", out / "reports"
-    raw_dir.mkdir(parents=True, exist_ok=True)
     pages_per_query = max(1, int(board.get("pages_per_query", 1)))
     max_items = int(board.get("max_items", 0))
     delay = float(board.get("delay_seconds", (cfg.get("crawl") or {}).get("delay_seconds", 15)))
 
-    with scan_lock.hold(feed_name):
-        stamp = run_stamp()
-        with run_record.record(feed_name, stamp) as findings:
-            health = scan_health.RunHealth(feed_name)
-            all_leads: list[Lead] = []
-            requests = 0
-            for spec in specs:
-                query = "" if spec["title"] == feed.label else spec["title"]
-                for page in range(1, pages_per_query + 1):
-                    url = spec["url"] if page == 1 else feed.page_url(query, spec["location"], page, board)
-                    print(f"Querying {feed.label} {spec['title']!r} page {page}: {url}")
-                    response, payload = fetch(url, feed)
-                    requests += 1
-                    parts = [slug(spec["title"])]
-                    if spec["location"]:
-                        parts.append(slug(spec["location"]))
-                    if page > 1:
-                        parts.append(f"p{page}")
-                    stem = raw_capture_stem("__".join(parts), stamp)
-                    (raw_dir / f"{stem}.{feed.capture_ext}").write_text(
-                        response.markdown or "", encoding="utf-8")
-                    outcome = health.record(response)
-                    if outcome != scan_health.OK:
-                        print(f"  {outcome} status={response.status_code} error={response.error_message}")
-                        break
-                    leads, rows = leads_from(payload, spec, feed)
-                    print(f"  {outcome} status={response.status_code} records={len(rows)} leads={len(leads)}")
-                    all_leads.extend(leads)
-                    # Never request the page after the last one: an honestly empty reply is
-                    # short enough to classify as empty-body, which would read as a broken
-                    # board rather than as a finished search.
-                    if not feed.more(payload, page, rows):
-                        break
-                    time.sleep(jittered(delay))
+    with scan_run.begin(feed_name, cfg, label=feed.label, allow_disabled=allow_disabled,
+                        dedupe_key=feed_identity, keep=max_items) as run:
+        requests = 0
+        for spec in specs:
+            query = "" if spec["title"] == feed.label else spec["title"]
+            for page in range(1, pages_per_query + 1):
+                url = spec["url"] if page == 1 else feed.page_url(query, spec["location"], page, board)
+                print(f"Querying {feed.label} {spec['title']!r} page {page}: {url}")
+                response, payload = fetch(url, feed)
+                requests += 1
+                parts = [slug(spec["title"])]
+                if spec["location"]:
+                    parts.append(slug(spec["location"]))
+                if page > 1:
+                    parts.append(f"p{page}")
+                stem = raw_capture_stem("__".join(parts), run.stamp)
+                (run.raw_dir / f"{stem}.{feed.capture_ext}").write_text(
+                    response.markdown or "", encoding="utf-8")
+                outcome = run.health.record(response)
+                if outcome != scan_health.OK:
+                    print(f"  {outcome} status={response.status_code} error={response.error_message}")
+                    break
+                leads, rows = leads_from(payload, spec, feed)
+                print(f"  {outcome} status={response.status_code} records={len(rows)} leads={len(leads)}")
+                run.leads.extend(leads)
+                # Never request the page after the last one: an honestly empty reply is
+                # short enough to classify as empty-body, which would read as a broken
+                # board rather than as a finished search.
+                if not feed.more(payload, page, rows):
+                    break
                 time.sleep(jittered(delay))
-
-            deduped = sorted(dedupe(all_leads, key=feed_identity),
-                             key=salary_parser.sort_key, reverse=True)
-            if max_items:
-                deduped = deduped[:max_items]
-            reports.mkdir(parents=True, exist_ok=True)
-            raw_path = reports / f"{feed_name}_raw_{stamp}.json"
-            dedup_path = reports / f"{feed_name}_deduped_{stamp}.json"
-            raw_path.write_text(json.dumps([x.to_dict() for x in all_leads], indent=2), encoding="utf-8")
-            dedup_path.write_text(json.dumps([x.to_dict() for x in deduped], indent=2), encoding="utf-8")
-            print(f"{feed.label} raw={len(all_leads)} deduped={len(deduped)}")
-            findings.update(jobs=len(deduped), searches=len(specs))
-            print(f"Deduped JSON: {dedup_path}")
-            health.finish()
-            return dedup_path
+            time.sleep(jittered(delay))
+        run.searches = len(specs)
+    return run.report
 
 
 def main() -> None:

@@ -27,17 +27,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
-from board_config import build_board_urls, load_config, jittered, raw_capture_stem, run_stamp
-from lead import Lead, dedupe, slug
-import salary as salary_parser
-import run_record
+from board_config import build_board_urls, load_config, jittered, raw_capture_stem
+from lead import Lead, slug
 import scan_health
-import scan_lock
+import scan_run
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "adzuna"
-RAW = OUT / "raw"
-REPORTS = OUT / "reports"
 
 TIMEOUT_SECONDS = 30
 
@@ -131,44 +127,28 @@ def parse_results(payload: dict, spec: dict) -> list[Lead]:
 
 
 def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> Path:
-    board = (cfg.get("boards") or {}).get("adzuna") or {}
-    if not board.get("enabled") and not allow_disabled:
-        raise SystemExit("Adzuna is disabled in config.yml. Use --allow-disabled for manual smoke tests.")
+    board = scan_run.enabled(cfg, "adzuna", allow_disabled)
     app_id, app_key = credentials(cfg)
     specs = build_board_urls({**cfg, "boards": {**cfg.get("boards", {}), "adzuna": {**board, "enabled": True}}}, "adzuna")
     if limit:
         specs = specs[:limit]
-    RAW.mkdir(parents=True, exist_ok=True)
-    with scan_lock.hold("adzuna"):
-        stamp = run_stamp()
-        with run_record.record("adzuna", stamp) as findings:
-            health = scan_health.RunHealth("adzuna")
-            all_leads: list[Lead] = []
-            for spec in specs:
-                print(f"Querying Adzuna {spec['title']!r} / {spec['location']!r}: {spec['url']}")
-                response, payload = fetch(spec["url"], app_id, app_key)
-                stem = raw_capture_stem(f"{slug(spec['title'])}__{slug(spec['location'])}", stamp)
-                (RAW / f"{stem}.json").write_text(response.markdown or "", encoding="utf-8")
-                outcome = health.record(response)
-                if outcome != scan_health.OK:
-                    print(f"  {outcome} status={response.status_code} error={response.error_message}")
-                else:
-                    leads = parse_results(payload, spec)
-                    print(f"  {outcome} status={response.status_code} matches={payload.get('count')} leads={len(leads)}")
-                    all_leads.extend(leads)
-                time.sleep(jittered(float((cfg.get("crawl") or {}).get("delay_seconds", 15))))
 
-            deduped = sorted(dedupe(all_leads), key=salary_parser.sort_key, reverse=True)
-            REPORTS.mkdir(parents=True, exist_ok=True)
-            raw_path = REPORTS / f"adzuna_raw_{stamp}.json"
-            dedup_path = REPORTS / f"adzuna_deduped_{stamp}.json"
-            raw_path.write_text(json.dumps([x.to_dict() for x in all_leads], indent=2), encoding="utf-8")
-            dedup_path.write_text(json.dumps([x.to_dict() for x in deduped], indent=2), encoding="utf-8")
-            print(f"Adzuna raw={len(all_leads)} deduped={len(deduped)}")
-            findings.update(jobs=len(deduped), searches=len(specs))
-            print(f"Deduped JSON: {dedup_path}")
-            health.finish()
-            return dedup_path
+    with scan_run.begin("adzuna", cfg, label="Adzuna", allow_disabled=allow_disabled) as run:
+        for spec in specs:
+            print(f"Querying Adzuna {spec['title']!r} / {spec['location']!r}: {spec['url']}")
+            response, payload = fetch(spec["url"], app_id, app_key)
+            stem = raw_capture_stem(f"{slug(spec['title'])}__{slug(spec['location'])}", run.stamp)
+            (run.raw_dir / f"{stem}.json").write_text(response.markdown or "", encoding="utf-8")
+            outcome = run.health.record(response)
+            if outcome != scan_health.OK:
+                print(f"  {outcome} status={response.status_code} error={response.error_message}")
+            else:
+                leads = parse_results(payload, spec)
+                print(f"  {outcome} status={response.status_code} matches={payload.get('count')} leads={len(leads)}")
+                run.leads.extend(leads)
+            time.sleep(jittered(float((cfg.get("crawl") or {}).get("delay_seconds", 15))))
+        run.searches = len(specs)
+    return run.report
 
 
 def main() -> None:

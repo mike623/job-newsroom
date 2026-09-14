@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import lead
 import json
 import sys
 from pathlib import Path
@@ -124,7 +125,7 @@ def test_the_same_job_found_under_two_searches_is_kept_once() -> None:
     leeds = adzuna_pipeline.parse_results({"results": [RESULT]}, SPEC)
     manchester = adzuna_pipeline.parse_results({"results": [RESULT]}, {**SPEC, "location": "manchester"})
 
-    assert len(adzuna_pipeline.dedupe(leeds + manchester)) == 1
+    assert len(lead.dedupe(leeds + manchester)) == 1
 
 
 # ---- health ----

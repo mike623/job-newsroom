@@ -34,7 +34,18 @@ class RunHealth:
         self.outcomes: list[str] = []
 
     def record(self, result) -> str:
-        outcome = classify(result)
+        """Classify one crawl result and tally it."""
+        return self.record_outcome(classify(result))
+
+    def record_outcome(self, outcome: str) -> str:
+        """Tally an outcome a board worked out for itself.
+
+        `classify` judges a page body, which is the right question for a crawl and the wrong
+        one for a mailbox: an empty label is the normal state of a read inbox, and the real
+        failure there is the mail client being unable to answer at all. The rule — a run where
+        nothing was usable is a failed run — is the same either way, so it is not restated per
+        board; only the observation behind one outcome differs.
+        """
         self.outcomes.append(outcome)
         return outcome
 

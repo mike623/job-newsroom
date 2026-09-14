@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import re
 from pathlib import Path
 from urllib.parse import urljoin
@@ -24,17 +23,12 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
-from board_config import build_board_urls, load_config, jittered, raw_capture_stem, run_stamp
-from lead import Lead, dedupe, slug
-import salary as salary_parser
-import run_record
-import scan_health
-import scan_lock
+from board_config import build_board_urls, load_config, jittered, raw_capture_stem
+from lead import Lead, slug
+import scan_run
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "haystack"
-RAW = OUT / "raw"
-REPORTS = OUT / "reports"
 
 # Rendered when Haystack's own search backend fails; the page is otherwise a normal, empty result list.
 SEARCH_ERROR = "Something went wrong loading jobs"
@@ -130,50 +124,34 @@ def parse_search_cards(html: str, spec: dict) -> list[Lead]:
     return leads
 
 
-async def scan(cfg: dict, limit: int | None = None) -> Path:
-    board = cfg.get("boards", {}).get("haystack", {})
-    if not board.get("enabled"):
-        raise SystemExit("Haystack is disabled in config.yml")
-    specs = build_board_urls(cfg, "haystack")
+async def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> Path:
+    board = scan_run.enabled(cfg, "haystack", allow_disabled)
+    specs = build_board_urls({**cfg, "boards": {**cfg.get("boards", {}), "haystack": {**board, "enabled": True}}},
+                             "haystack")
     if limit:
         specs = specs[:limit]
-    RAW.mkdir(parents=True, exist_ok=True)
     delay_s = float(board.get("delay_seconds", (cfg.get("crawl") or {}).get("delay_seconds", 15)))
-    with scan_lock.hold("haystack"):
-        stamp = run_stamp()
-        with run_record.record("haystack", stamp) as findings:
-            health = scan_health.RunHealth("haystack")
-            all_leads: list[Lead] = []
-            async with AsyncWebCrawler(config=browser_config(cfg)) as crawler:
-                for spec in specs:
-                    print(f"Crawling Haystack {spec['title']!r} / {spec['location']!r}: {spec['url']}")
+
+    with scan_run.begin("haystack", cfg, label="Haystack", allow_disabled=allow_disabled) as run:
+        async with AsyncWebCrawler(config=browser_config(cfg)) as crawler:
+            for spec in specs:
+                print(f"Crawling Haystack {spec['title']!r} / {spec['location']!r}: {spec['url']}")
+                r = await crawler.arun(url=spec["url"], config=crawl_config(cfg))
+                leads = parse_search_cards(r.html or "", spec)
+                if not leads and SEARCH_ERROR in str(r.markdown or ""):
+                    # The search backend failed, not the crawl. One retry is usually enough.
+                    print(f"  search backend error, retrying once after {delay_s:.0f}s")
+                    await asyncio.sleep(jittered(delay_s))
                     r = await crawler.arun(url=spec["url"], config=crawl_config(cfg))
                     leads = parse_search_cards(r.html or "", spec)
-                    if not leads and SEARCH_ERROR in str(r.markdown or ""):
-                        # The search backend failed, not the crawl. One retry is usually enough.
-                        print(f"  search backend error, retrying once after {delay_s:.0f}s")
-                        await asyncio.sleep(jittered(delay_s))
-                        r = await crawler.arun(url=spec["url"], config=crawl_config(cfg))
-                        leads = parse_search_cards(r.html or "", spec)
-                    stem = raw_capture_stem(f"{slug(spec['title'])}__{slug(spec['location'])}", stamp)
-                    (RAW / f"{stem}.md").write_text(str(r.markdown or ""), encoding="utf-8")
-                    (RAW / f"{stem}.html").write_text(r.html or "", encoding="utf-8")
-                    print(f"  status={r.status_code} {health.record(r)} leads={len(leads)}")
-                    all_leads.extend(leads)
-                    await asyncio.sleep(jittered(delay_s))
-            for lead in all_leads:
-                salary_parser.apply_to(lead)
-            deduped = sorted(dedupe(all_leads), key=salary_parser.sort_key, reverse=True)
-            REPORTS.mkdir(parents=True, exist_ok=True)
-            raw_path = REPORTS / f"haystack_raw_{stamp}.json"
-            dedup_path = REPORTS / f"haystack_deduped_{stamp}.json"
-            raw_path.write_text(json.dumps([x.to_dict() for x in all_leads], indent=2), encoding="utf-8")
-            dedup_path.write_text(json.dumps([x.to_dict() for x in deduped], indent=2), encoding="utf-8")
-            print(f"Haystack raw={len(all_leads)} deduped={len(deduped)}")
-            findings.update(jobs=len(deduped), searches=len(specs))
-            print(f"Deduped JSON: {dedup_path}")
-            health.finish()
-            return dedup_path
+                stem = raw_capture_stem(f"{slug(spec['title'])}__{slug(spec['location'])}", run.stamp)
+                (run.raw_dir / f"{stem}.md").write_text(str(r.markdown or ""), encoding="utf-8")
+                (run.raw_dir / f"{stem}.html").write_text(r.html or "", encoding="utf-8")
+                print(f"  status={r.status_code} {run.health.record(r)} leads={len(leads)}")
+                run.leads.extend(leads)
+                await asyncio.sleep(jittered(delay_s))
+        run.searches = len(specs)
+    return run.report
 
 
 async def main() -> None:
@@ -181,10 +159,12 @@ async def main() -> None:
     ap.add_argument("command", choices=["scan"])
     ap.add_argument("--config", default="config.yml")
     ap.add_argument("--limit", type=int, help="limit search pages for smoke tests")
+    ap.add_argument("--allow-disabled", action="store_true",
+                    help="scan even when the board is disabled; for manual smoke tests")
     args = ap.parse_args()
     cfg = load_config(ROOT / args.config)
     if args.command == "scan":
-        await scan(cfg, args.limit)
+        await scan(cfg, args.limit, args.allow_disabled)
 
 
 if __name__ == "__main__":

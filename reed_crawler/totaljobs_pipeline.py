@@ -12,16 +12,12 @@ from urllib.parse import urljoin
 import yaml
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
-from board_config import build_board_urls, load_config, jittered, raw_capture_stem, run_stamp
-from lead import Lead, dedupe, slug
-import salary as salary_parser
-import run_record
-import scan_health
-import scan_lock
+from board_config import build_board_urls, load_config, jittered, raw_capture_stem
+from lead import Lead, slug
+import scan_run
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "totaljobs"
-RAW = OUT / "raw"
 JOB_PAGES = OUT / "job_pages"
 REPORTS = OUT / "reports"
 DEFAULT_CAREER_OPS = Path(os.environ.get("CAREER_OPS_WORKSPACE") or ROOT.parent / "career-ops")
@@ -171,45 +167,29 @@ def parse_search_links(result, spec: dict, markdown: str) -> list[Lead]:
     return links
 
 
-async def scan_searches(cfg: dict, limit: int | None = None) -> Path:
-    specs = build_board_urls(cfg, "totaljobs")
+async def scan_searches(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> Path:
+    board = scan_run.enabled(cfg, "totaljobs", allow_disabled)
+    specs = build_board_urls({**cfg, "boards": {**cfg.get("boards", {}), "totaljobs": {**board, "enabled": True}}},
+                             "totaljobs")
     if limit:
         specs = specs[:limit]
-    board = cfg.get("boards", {}).get("totaljobs", {})
-    if not board.get("enabled"):
-        raise SystemExit("Totaljobs is disabled in config.yml")
-    RAW.mkdir(parents=True, exist_ok=True)
-    with scan_lock.hold("totaljobs"):
-        stamp = run_stamp()
-        with run_record.record("totaljobs", stamp) as findings:
-            health = scan_health.RunHealth("totaljobs")
-            all_leads: list[Lead] = []
-            async with AsyncWebCrawler(config=browser_config(cfg)) as crawler:
-                for spec in specs:
-                    print(f"Crawling Totaljobs {spec['title']!r} / {spec['location']!r}: {spec['url']}")
-                    result = await crawler.arun(url=spec["url"], config=crawl_config(cfg))
-                    md = str(result.markdown or "")
-                    html = result.html or ""
-                    stem = raw_capture_stem(f"{slug(spec['title'])}__{slug(spec['location'])}", stamp)
-                    (RAW / f"{stem}.md").write_text(md, encoding="utf-8")
-                    (RAW / f"{stem}.html").write_text(html, encoding="utf-8")
-                    leads = parse_result(result, spec)
-                    print(f"  status={result.status_code} {health.record(result)} leads={len(leads)}")
-                    all_leads.extend(leads)
-                    await asyncio.sleep(jittered(float((cfg.get("crawl") or {}).get("delay_seconds", 15))))
-            for lead in all_leads:
-                salary_parser.apply_to(lead)
-            deduped = sorted(dedupe(all_leads), key=salary_parser.sort_key, reverse=True)
-            REPORTS.mkdir(parents=True, exist_ok=True)
-            raw_path = REPORTS / f"totaljobs_raw_{stamp}.json"
-            dedup_path = REPORTS / f"totaljobs_deduped_{stamp}.json"
-            raw_path.write_text(json.dumps([x.to_dict() for x in all_leads], indent=2), encoding="utf-8")
-            dedup_path.write_text(json.dumps([x.to_dict() for x in deduped], indent=2), encoding="utf-8")
-            print(f"Totaljobs raw={len(all_leads)} deduped={len(deduped)}")
-            findings.update(jobs=len(deduped), searches=len(specs))
-            print(f"Deduped JSON: {dedup_path}")
-            health.finish()
-            return dedup_path
+
+    with scan_run.begin("totaljobs", cfg, label="Totaljobs", allow_disabled=allow_disabled) as run:
+        async with AsyncWebCrawler(config=browser_config(cfg)) as crawler:
+            for spec in specs:
+                print(f"Crawling Totaljobs {spec['title']!r} / {spec['location']!r}: {spec['url']}")
+                result = await crawler.arun(url=spec["url"], config=crawl_config(cfg))
+                md = str(result.markdown or "")
+                html = result.html or ""
+                stem = raw_capture_stem(f"{slug(spec['title'])}__{slug(spec['location'])}", run.stamp)
+                (run.raw_dir / f"{stem}.md").write_text(md, encoding="utf-8")
+                (run.raw_dir / f"{stem}.html").write_text(html, encoding="utf-8")
+                leads = parse_result(result, spec)
+                print(f"  status={result.status_code} {run.health.record(result)} leads={len(leads)}")
+                run.leads.extend(leads)
+                await asyncio.sleep(jittered(float((cfg.get("crawl") or {}).get("delay_seconds", 15))))
+        run.searches = len(specs)
+    return run.report
 
 
 def latest_deduped() -> Path:
@@ -392,16 +372,18 @@ async def main() -> None:
     ap.add_argument("--top", type=int)
     ap.add_argument("--delay", type=float)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--allow-disabled", action="store_true",
+                    help="scan even when the board is disabled; for manual smoke tests")
     args = ap.parse_args()
     cfg = load_config(ROOT / args.config)
     if args.command == "scan":
-        await scan_searches(cfg, args.limit)
+        await scan_searches(cfg, args.limit, args.allow_disabled)
     elif args.command == "enrich":
         await enrich(cfg, Path(args.input) if args.input else None, args.top, args.delay)
     elif args.command == "export":
         export_to_career_ops(cfg, Path(args.input) if args.input else None, args.dry_run)
     elif args.command == "run":
-        dedup = await scan_searches(cfg, args.limit)
+        dedup = await scan_searches(cfg, args.limit, args.allow_disabled)
         enriched = await enrich(cfg, dedup, args.top, args.delay)
         export_to_career_ops(cfg, enriched, args.dry_run)
 

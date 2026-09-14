@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import lead
 import sys
 from pathlib import Path
 
@@ -72,7 +73,7 @@ def test_the_same_advert_twice_is_one_lead() -> None:
     leads = linkedin_pipeline.parse_search_cards(CAPTURE + CAPTURE, SPEC)
 
     assert len(leads) == 4
-    assert len(linkedin_pipeline.dedupe(leads)) == 2
+    assert len(lead.dedupe(leads)) == 2
 
 
 def test_the_id_agrees_with_the_one_the_email_board_derives() -> None:

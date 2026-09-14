@@ -40,6 +40,6 @@ def test_scan_entrypoints_stamp_their_raw_captures() -> None:
         source = (ROOT / "reed_crawler" / name).read_text(encoding="utf-8")
         # aggregator_pipeline writes into a per-feed directory and picks the extension from
         # the feed, so neither can be a module constant. The stem is what this guards.
-        writes = re.findall(r"\((?:RAW|raw_dir) / f\"\{(\w+)\}\.[^\"]+\"\)", source)
+        writes = re.findall(r"\((?:RAW|raw_dir|run\.raw_dir) / f\"\{(\w+)\}\.[^\"]+\"\)", source)
         assert writes, f"{name}: found no raw capture writes to check"
         assert all(w == "stem" for w in writes), f"{name}: raw capture written without a run stamp: {writes}"

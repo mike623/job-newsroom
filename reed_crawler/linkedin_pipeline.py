@@ -24,7 +24,6 @@ refuses to page past `start=1000`, so a search ends there whatever remains.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import time
 import urllib.error
@@ -36,16 +35,13 @@ from bs4 import BeautifulSoup
 
 from board_config import (build_board_urls, jittered, linkedin_search_url, load_config,
                           raw_capture_stem, run_stamp)
-from lead import Lead, dedupe, slug
+from lead import Lead, slug
 import salary as salary_parser
-import run_record
 import scan_health
-import scan_lock
+import scan_run
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "linkedin"
-RAW = OUT / "raw"
-REPORTS = OUT / "reports"
 
 TIMEOUT_SECONDS = 30
 # LinkedIn stops paging here regardless of how many results the search claims.
@@ -140,9 +136,7 @@ def parse_search_cards(html: str, spec: dict) -> list[Lead]:
 
 
 def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> Path:
-    board = (cfg.get("boards") or {}).get("linkedin") or {}
-    if not board.get("enabled") and not allow_disabled:
-        raise SystemExit("LinkedIn is disabled in config.yml. Use --allow-disabled for manual smoke tests.")
+    board = scan_run.enabled(cfg, "linkedin", allow_disabled)
     specs = build_board_urls({**cfg, "boards": {**cfg.get("boards", {}), "linkedin": {**board, "enabled": True}}},
                              "linkedin")
     if limit:
@@ -152,51 +146,36 @@ def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> P
     max_age_days = int(board.get("max_age_days", 0))
     delay = float(board.get("delay_seconds", (cfg.get("crawl") or {}).get("delay_seconds", 15)))
 
-    RAW.mkdir(parents=True, exist_ok=True)
-    with scan_lock.hold("linkedin"):
-        stamp = run_stamp()
-        with run_record.record("linkedin", stamp) as findings:
-            health = scan_health.RunHealth("linkedin")
-            all_leads: list[Lead] = []
-            for spec in specs:
-                print(f"Querying LinkedIn {spec['title']!r} / {spec['location']!r}")
-                start = 0
-                for page in range(pages_per_search):
-                    url = linkedin_search_url(spec["title"], spec["location"], distance, max_age_days, start)
-                    response = fetch(url)
-                    stem = raw_capture_stem(
-                        f"{slug(spec['title'])}__{slug(spec['location'])}__start{start}", stamp)
-                    (RAW / f"{stem}.html").write_text(response.html or "", encoding="utf-8")
-                    outcome = health.record(response)
-                    if response.status_code in BLOCKED_STATUSES:
-                        # Retrying a throttle is the one response guaranteed to make it worse.
-                        print(f"  blocked status={response.status_code} — abandoning this search")
-                        break
-                    if outcome != scan_health.OK:
-                        print(f"  {outcome} status={response.status_code} error={response.error_message}")
-                        break
-                    leads = parse_search_cards(response.html, spec)
-                    print(f"  {outcome} status={response.status_code} start={start} leads={len(leads)}")
-                    all_leads.extend(leads)
-                    # Paging advances by what arrived, not by an assumed page size.
-                    start += len(leads)
-                    if not leads or start >= MAX_START:
-                        break
-                    if page + 1 < pages_per_search:
-                        time.sleep(jittered(delay))
-                time.sleep(jittered(delay))
-
-            deduped = sorted(dedupe(all_leads), key=salary_parser.sort_key, reverse=True)
-            REPORTS.mkdir(parents=True, exist_ok=True)
-            raw_path = REPORTS / f"linkedin_raw_{stamp}.json"
-            dedup_path = REPORTS / f"linkedin_deduped_{stamp}.json"
-            raw_path.write_text(json.dumps([x.to_dict() for x in all_leads], indent=2), encoding="utf-8")
-            dedup_path.write_text(json.dumps([x.to_dict() for x in deduped], indent=2), encoding="utf-8")
-            print(f"LinkedIn raw={len(all_leads)} deduped={len(deduped)}")
-            findings.update(jobs=len(deduped), searches=len(specs))
-            print(f"Deduped JSON: {dedup_path}")
-            health.finish()
-            return dedup_path
+    with scan_run.begin("linkedin", cfg, label="LinkedIn", allow_disabled=allow_disabled) as run:
+        for spec in specs:
+            print(f"Querying LinkedIn {spec['title']!r} / {spec['location']!r}")
+            start = 0
+            for page in range(pages_per_search):
+                url = linkedin_search_url(spec["title"], spec["location"], distance, max_age_days, start)
+                response = fetch(url)
+                stem = raw_capture_stem(
+                    f"{slug(spec['title'])}__{slug(spec['location'])}__start{start}", run.stamp)
+                (run.raw_dir / f"{stem}.html").write_text(response.html or "", encoding="utf-8")
+                outcome = run.health.record(response)
+                if response.status_code in BLOCKED_STATUSES:
+                    # Retrying a throttle is the one response guaranteed to make it worse.
+                    print(f"  blocked status={response.status_code} — abandoning this search")
+                    break
+                if outcome != scan_health.OK:
+                    print(f"  {outcome} status={response.status_code} error={response.error_message}")
+                    break
+                leads = parse_search_cards(response.html, spec)
+                print(f"  {outcome} status={response.status_code} start={start} leads={len(leads)}")
+                run.leads.extend(leads)
+                # Paging advances by what arrived, not by an assumed page size.
+                start += len(leads)
+                if not leads or start >= MAX_START:
+                    break
+                if page + 1 < pages_per_search:
+                    time.sleep(jittered(delay))
+            time.sleep(jittered(delay))
+        run.searches = len(specs)
+    return run.report
 
 
 def main() -> None:

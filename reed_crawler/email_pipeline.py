@@ -33,16 +33,13 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qs
 
-from board_config import load_config, raw_capture_stem, run_stamp
-from lead import Lead, dedupe, slug
-import salary as salary_parser
-import run_record
-import scan_lock
+from board_config import load_config, raw_capture_stem
+from lead import Lead, slug
+import scan_health
+import scan_run
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "email"
-RAW = OUT / "raw"
-REPORTS = OUT / "reports"
 
 USER_AGENT = "Mozilla/5.0"
 HIMALAYA_TIMEOUT = 180
@@ -739,6 +736,16 @@ def leads_from_message(meta: dict, envelope: dict, body: str, max_urls: int) -> 
     return leads, (template["id"] if template else "")
 
 
+def posting_identity(lead) -> str:
+    """What makes two email leads the same posting.
+
+    The id is always derived from the posting URL here, so it is the whole identity: the same
+    advert forwarded by two providers, or arriving twice in one digest, is one job whatever the
+    mails called it.
+    """
+    return lead.job_id
+
+
 def labels_from(cfg: dict) -> list[dict]:
     board = (cfg.get("boards") or {}).get("email") or {}
     rows = []
@@ -754,9 +761,7 @@ def labels_from(cfg: dict) -> list[dict]:
 
 def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False,
          mark_read: bool | None = None, since: str = "") -> Path:
-    board = (cfg.get("boards") or {}).get("email") or {}
-    if not board.get("enabled") and not allow_disabled:
-        raise SystemExit("Email is disabled in config.yml. Use --allow-disabled for manual smoke tests.")
+    board = scan_run.enabled(cfg, "email", allow_disabled)
 
     labels = labels_from(cfg)
     per_label = int(limit or board.get("messages_per_label", 25))
@@ -767,80 +772,62 @@ def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False,
         days = int(board.get("max_age_days", 14))
         since = (datetime.now() - timedelta(days=days)).date().isoformat()
 
-    RAW.mkdir(parents=True, exist_ok=True)
-    with scan_lock.hold("email"):
-        stamp = run_stamp()
-        with run_record.record("email", stamp) as findings:
-            all_leads: list[Lead] = []
-            failures: list[str] = []
-            templates: dict[str, int] = {}
-            unrecognized: list[str] = []
+    with scan_run.begin("email", cfg, label="Email", allow_disabled=allow_disabled,
+                        dedupe_key=posting_identity) as run:
+        failures: list[str] = []
+        templates: dict[str, int] = {}
+        unrecognized: list[str] = []
 
-            for meta in labels:
-                print(f"Reading {meta['label']} (since {since}, newest {per_label})")
+        for meta in labels:
+            print(f"Reading {meta['label']} (since {since}, newest {per_label})")
+            try:
+                envelopes = list_envelopes(meta["label"], per_label, since,
+                                           unread_only=mark_read)
+            except MailError as failure:
+                print(f"  failed: {failure}")
+                failures.append(meta["label"])
+                run.health.record_outcome(scan_health.FAILED)
+                continue
+
+            captured, produced = [], 0
+            for envelope in envelopes:
                 try:
-                    envelopes = list_envelopes(meta["label"], per_label, since,
-                                               unread_only=mark_read)
+                    body = read_message(meta["label"], envelope.get("id"))
                 except MailError as failure:
-                    print(f"  failed: {failure}")
-                    failures.append(meta["label"])
+                    print(f"  message {envelope.get('id')}: {failure}")
                     continue
-
-                captured, produced = [], 0
-                for envelope in envelopes:
+                leads, template = leads_from_message(meta, envelope, body, max_urls)
+                key = template or f"{meta['provider']}:unrecognized"
+                templates[key] = templates.get(key, 0) + 1
+                # A silent parse failure looks identical to a quiet inbox — name the mail so
+                # a new template shows up as work to do rather than as missing jobs.
+                if not template and leads:
+                    unrecognized.append(f"{meta['label']}#{envelope.get('id')} "
+                                        f"{str(envelope.get('subject') or '')[:110]}")
+                captured.append({"envelope": envelope, "body": body, "template": template,
+                                 "leads": len(leads)})
+                run.leads.extend(leads)
+                produced += len(leads)
+                if mark_read and leads:
                     try:
-                        body = read_message(meta["label"], envelope.get("id"))
+                        mark_message_read(meta["label"], envelope.get("id"))
                     except MailError as failure:
-                        print(f"  message {envelope.get('id')}: {failure}")
-                        continue
-                    leads, template = leads_from_message(meta, envelope, body, max_urls)
-                    key = template or f"{meta['provider']}:unrecognized"
-                    templates[key] = templates.get(key, 0) + 1
-                    # A silent parse failure looks identical to a quiet inbox — name the mail so
-                    # a new template shows up as work to do rather than as missing jobs.
-                    if not template and leads:
-                        unrecognized.append(f"{meta['label']}#{envelope.get('id')} "
-                                            f"{str(envelope.get('subject') or '')[:110]}")
-                    captured.append({"envelope": envelope, "body": body, "template": template,
-                                     "leads": len(leads)})
-                    all_leads.extend(leads)
-                    produced += len(leads)
-                    if mark_read and leads:
-                        try:
-                            mark_message_read(meta["label"], envelope.get("id"))
-                        except MailError as failure:
-                            print(f"  could not mark {envelope.get('id')} read: {failure}")
+                        print(f"  could not mark {envelope.get('id')} read: {failure}")
 
-                stem = raw_capture_stem(slug(meta["label"]), stamp)
-                (RAW / f"{stem}.json").write_text(json.dumps(captured, indent=2), encoding="utf-8")
-                print(f"  messages={len(envelopes)} leads={produced}")
+            stem = raw_capture_stem(slug(meta["label"]), run.stamp)
+            (run.raw_dir / f"{stem}.json").write_text(json.dumps(captured, indent=2), encoding="utf-8")
+            # The label answered. Whether it held anything is not the question: a quiet inbox
+            # is the normal state of a board whose mail is marked read as it is processed.
+            run.health.record_outcome(scan_health.OK)
+            print(f"  messages={len(envelopes)} leads={produced}")
 
-            # scan_health classifies a crawled page body, which this board has none of. Here an
-            # empty label is the normal state of a read inbox, and the real failure is himalaya
-            # being unable to answer at all.
-            if labels and len(failures) == len(labels):
-                raise SystemExit(f"email: no label could be read ({', '.join(failures)}). "
-                                 "Check that himalaya is installed and configured.")
-
-            # The id is always derived from the posting URL here, so it is the whole identity:
-            # the same advert forwarded by two providers is one job, whatever the mails called it.
-            deduped = sorted(dedupe(all_leads, key=lambda lead: lead.job_id),
-                             key=salary_parser.sort_key, reverse=True)
-            REPORTS.mkdir(parents=True, exist_ok=True)
-            raw_path = REPORTS / f"email_raw_{stamp}.json"
-            dedup_path = REPORTS / f"email_deduped_{stamp}.json"
-            raw_path.write_text(json.dumps([x.to_dict() for x in all_leads], indent=2), encoding="utf-8")
-            dedup_path.write_text(json.dumps([x.to_dict() for x in deduped], indent=2), encoding="utf-8")
-
-            print(f"Email raw={len(all_leads)} deduped={len(deduped)}")
-            print("templates: " + (" ".join(f"{k}={v}" for k, v in templates.items()) or "none"))
-            for line in unrecognized:
-                print(f"  unrecognized template: {line}")
-            if failures:
-                print(f"labels that could not be read: {', '.join(failures)}")
-            findings.update(jobs=len(deduped), searches=len(labels))
-            print(f"Deduped JSON: {dedup_path}")
-            return dedup_path
+        print("templates: " + (" ".join(f"{k}={v}" for k, v in templates.items()) or "none"))
+        for line in unrecognized:
+            print(f"  unrecognized template: {line}")
+        if failures:
+            print(f"labels that could not be read: {', '.join(failures)}")
+        run.searches = len(labels)
+    return run.report
 
 
 def main() -> None:

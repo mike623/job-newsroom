@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import lead
 import sys
 from pathlib import Path
 
@@ -273,7 +274,7 @@ def test_dedupe_keeps_one_row_per_posting():
     rows = [email.Lead(source="email", search_title="l", search_location="", role_title="A",
                             company="", salary="", location="", contract="", posted="", url="u",
                             job_id="indeed-1", raw_block="")] * 2
-    assert len(email.dedupe(list(rows))) == 1
+    assert len(lead.dedupe(list(rows), key=email.posting_identity)) == 1
 
 
 def test_labels_must_name_a_known_provider():

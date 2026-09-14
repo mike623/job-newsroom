@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import lead
 import json
 import sys
 from pathlib import Path
@@ -220,7 +221,7 @@ def test_an_empty_payload_parses_to_nothing() -> None:
 def test_the_same_job_found_twice_is_kept_once() -> None:
     twice = parse("remoteok", REMOTEOK) + parse("remoteok", REMOTEOK)
 
-    assert len(aggregator_pipeline.dedupe(twice)) == 1
+    assert len(lead.dedupe(twice, key=aggregator_pipeline.feed_identity)) == 1
 
 
 # --- health -----------------------------------------------------------------------------

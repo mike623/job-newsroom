@@ -9,18 +9,14 @@ from urllib.parse import urljoin
 import yaml
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
-from board_config import board_locations, board_titles, jittered, raw_capture_stem, run_stamp
-import salary as salary_parser
-import run_record
+from board_config import board_locations, board_titles, jittered, raw_capture_stem
 import scan_health
-import scan_lock
-from lead import dedupe
+import scan_run
 from reed_utils import SearchSpec, parse_jobs_from_markdown, write_report
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "reed"
 RAW = OUT / "raw"
-REPORTS = OUT / "reports"
 
 
 def load_config(path: Path) -> dict:
@@ -76,6 +72,8 @@ async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yml")
     ap.add_argument("--limit", type=int, default=None, help="limit number of search pages for smoke tests")
+    ap.add_argument("--allow-disabled", action="store_true",
+                    help="scan even when the board is disabled; for manual smoke tests")
     args = ap.parse_args()
 
     cfg = load_config(ROOT / args.config)
@@ -105,38 +103,17 @@ async def main() -> None:
         screenshot=False,
     )
 
-    with scan_lock.hold("reed"):
-        stamp = run_stamp()
-        with run_record.record("reed", stamp) as findings:
-            health = scan_health.RunHealth("reed")
-            all_jobs = []
-            async with AsyncWebCrawler(config=browser_config) as crawler:
-                for spec in specs:
-                    all_jobs.extend(await crawl_search(crawler, spec, run_config, stamp, health))
-                    await asyncio.sleep(jittered(float(crawl_cfg.get("delay_seconds", cfg.get("delay_seconds", 2)))))
+    with scan_run.begin("reed", cfg, label="Reed", allow_disabled=args.allow_disabled) as run:
+        async with AsyncWebCrawler(config=browser_config) as crawler:
+            for spec in specs:
+                run.leads.extend(await crawl_search(crawler, spec, run_config, run.stamp, run.health))
+                await asyncio.sleep(jittered(float(crawl_cfg.get("delay_seconds", cfg.get("delay_seconds", 2)))))
+        run.searches = len(specs)
 
-            for job in all_jobs:
-                salary_parser.apply_to(job)
-            deduped = sorted(dedupe(all_jobs), key=salary_parser.sort_key, reverse=True)
-
-            REPORTS.mkdir(parents=True, exist_ok=True)
-            raw_json = REPORTS / f"reed_raw_{stamp}.json"
-            dedup_json = REPORTS / f"reed_deduped_{stamp}.json"
-            report_md = REPORTS / f"reed_report_{stamp}.md"
-
-            raw_json.write_text(json.dumps([j.to_dict() for j in all_jobs], indent=2), encoding="utf-8")
-            dedup_json.write_text(json.dumps([j.to_dict() for j in deduped], indent=2), encoding="utf-8")
-            write_report(deduped, report_md)
-
-            print("\nSummary")
-            print(f"Search pages crawled: {len(specs)}")
-            print(f"Raw jobs: {len(all_jobs)}")
-            print(f"Deduped jobs: {len(deduped)}")
-            print(f"Raw JSON: {raw_json}")
-            print(f"Deduped JSON: {dedup_json}")
-            findings.update(jobs=len(deduped), searches=len(specs))
-            print(f"Report: {report_md}")
-            health.finish()
+    # Reed alone also writes a readable summary beside its reports.
+    report_md = run.report.with_name(f"reed_report_{run.stamp}.md")
+    write_report(run.deduped, report_md)
+    print(f"Report: {report_md}")
 
 
 if __name__ == "__main__":

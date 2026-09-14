@@ -12,16 +12,12 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
-from board_config import build_board_urls, load_config, jittered, raw_capture_stem, run_stamp
-from lead import Lead, dedupe, slug
-import salary as salary_parser
-import run_record
-import scan_health
-import scan_lock
+from board_config import build_board_urls, load_config, jittered, raw_capture_stem
+from lead import Lead, slug
+import scan_run
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "indeed"
-RAW = OUT / "raw"
 JOB_PAGES = OUT / "job_pages"
 REPORTS = OUT / "reports"
 DEFAULT_CAREER_OPS = Path(os.environ.get("CAREER_OPS_WORKSPACE") or ROOT.parent / "career-ops")
@@ -153,44 +149,28 @@ def parse_links(result, spec: dict) -> list[Lead]:
 
 
 async def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> Path:
-    board = cfg.get("boards", {}).get("indeed", {})
-    if not board.get("enabled") and not allow_disabled:
-        raise SystemExit("Indeed is disabled in config.yml. Use --allow-disabled for manual smoke tests.")
-    specs = build_board_urls({**cfg, "boards": {**cfg.get("boards", {}), "indeed": {**board, "enabled": True}}}, "indeed")
+    board = scan_run.enabled(cfg, "indeed", allow_disabled)
+    specs = build_board_urls({**cfg, "boards": {**cfg.get("boards", {}), "indeed": {**board, "enabled": True}}},
+                             "indeed")
     if limit:
         specs = specs[:limit]
-    RAW.mkdir(parents=True, exist_ok=True)
-    with scan_lock.hold("indeed"):
-        stamp = run_stamp()
-        with run_record.record("indeed", stamp) as findings:
-            health = scan_health.RunHealth("indeed")
-            all_leads = []
-            async with AsyncWebCrawler(config=browser_config(cfg)) as crawler:
-                for spec in specs:
-                    print(f"Crawling Indeed {spec['title']!r} / {spec['location']!r}: {spec['url']}")
-                    r = await crawler.arun(url=spec["url"], config=crawl_config(cfg))
-                    md = str(r.markdown or "")
-                    html = r.html or ""
-                    stem = raw_capture_stem(f"{slug(spec['title'])}__{slug(spec['location'])}", stamp)
-                    (RAW / f"{stem}.md").write_text(md, encoding="utf-8")
-                    (RAW / f"{stem}.html").write_text(html, encoding="utf-8")
-                    leads = parse_result(r, spec)
-                    print(f"  status={r.status_code} {health.record(r)} leads={len(leads)}")
-                    all_leads.extend(leads)
-                    await asyncio.sleep(jittered(float((cfg.get("crawl") or {}).get("delay_seconds", 15))))
-            for lead in all_leads:
-                salary_parser.apply_to(lead)
-            deduped = sorted(dedupe(all_leads), key=salary_parser.sort_key, reverse=True)
-            REPORTS.mkdir(parents=True, exist_ok=True)
-            raw_path = REPORTS / f"indeed_raw_{stamp}.json"
-            dedup_path = REPORTS / f"indeed_deduped_{stamp}.json"
-            raw_path.write_text(json.dumps([x.to_dict() for x in all_leads], indent=2), encoding="utf-8")
-            dedup_path.write_text(json.dumps([x.to_dict() for x in deduped], indent=2), encoding="utf-8")
-            print(f"Indeed raw={len(all_leads)} deduped={len(deduped)}")
-            findings.update(jobs=len(deduped), searches=len(specs))
-            print(f"Deduped JSON: {dedup_path}")
-            health.finish()
-            return dedup_path
+
+    with scan_run.begin("indeed", cfg, label="Indeed", allow_disabled=allow_disabled) as run:
+        async with AsyncWebCrawler(config=browser_config(cfg)) as crawler:
+            for spec in specs:
+                print(f"Crawling Indeed {spec['title']!r} / {spec['location']!r}: {spec['url']}")
+                r = await crawler.arun(url=spec["url"], config=crawl_config(cfg))
+                md = str(r.markdown or "")
+                html = r.html or ""
+                stem = raw_capture_stem(f"{slug(spec['title'])}__{slug(spec['location'])}", run.stamp)
+                (run.raw_dir / f"{stem}.md").write_text(md, encoding="utf-8")
+                (run.raw_dir / f"{stem}.html").write_text(html, encoding="utf-8")
+                leads = parse_result(r, spec)
+                print(f"  status={r.status_code} {run.health.record(r)} leads={len(leads)}")
+                run.leads.extend(leads)
+                await asyncio.sleep(jittered(float((cfg.get("crawl") or {}).get("delay_seconds", 15))))
+        run.searches = len(specs)
+    return run.report
 
 
 def latest(pattern: str) -> Path:
