@@ -1,42 +1,12 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin
 
 import salary
+from board_config import BASE_REED
 from lead import Lead
-
-BASE = "https://www.reed.co.uk"
-
-
-def slug_text(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
-
-
-def safe_name(*parts: str) -> str:
-    return "__".join(slug_text(p).replace("-", "_") for p in parts)
-
-
-def reed_search_url(title: str, location: str, proximity: int) -> str:
-    return f"{BASE}/jobs/{slug_text(title)}-jobs-in-{slug_text(location)}?proximity={proximity}"
-
-
-@dataclass
-class SearchSpec:
-    title: str
-    location: str
-    proximity: int
-
-    @property
-    def url(self) -> str:
-        return reed_search_url(self.title, self.location, self.proximity)
-
-    @property
-    def name(self) -> str:
-        return safe_name(self.title, self.location)
-
 
 def link_target(destination: str) -> str:
     """The href out of a markdown link target.
@@ -53,13 +23,13 @@ def extract_job_id(url: str) -> str:
     return m.group(1) if m else ""
 
 
-def parse_jobs_from_markdown(markdown: str, spec: SearchSpec) -> list[Lead]:
+def parse_jobs_from_markdown(markdown: str, spec: dict) -> list[Lead]:
     # Reed result items usually start with Markdown H2 link lines.
     pattern = re.compile(r"^## \[([^\]]+)\]\(([^\)]+)\).*?(?=^## \[|\Z)", re.M | re.S)
     jobs: list[Lead] = []
     for match in pattern.finditer(markdown):
         title = match.group(1).strip()
-        url = urljoin(BASE, link_target(match.group(2)))
+        url = urljoin(BASE_REED, link_target(match.group(2)))
         block = match.group(0).strip()
         lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
 
@@ -84,8 +54,8 @@ def parse_jobs_from_markdown(markdown: str, spec: SearchSpec) -> list[Lead]:
 
         jobs.append(Lead(
             source="reed",
-            search_title=spec.title,
-            search_location=spec.location,
+            search_title=spec["title"],
+            search_location=spec["location"],
             role_title=title,
             company=company,
             salary=salary,

@@ -43,16 +43,13 @@ class Run:
     label: str
     stamp: str
     health: scan_health.RunHealth
+    raw_dir: Path
     leads: list[Lead] = field(default_factory=list)
     searches: int = 0
     report: Path | None = None
     # Set once the body is done, for a board that writes something of its own beside the
     # reports — Reed's markdown summary is the only one.
     deduped: list[Lead] = field(default_factory=list)
-
-    @property
-    def raw_dir(self) -> Path:
-        return OUTPUTS / self.board / "raw"
 
 
 def enabled(cfg: dict, board: str, allow_disabled: bool = False) -> dict:
@@ -83,7 +80,8 @@ def begin(board: str, cfg: dict, *, label: str = "", allow_disabled: bool = Fals
         stamp = run_stamp()
         with run_record.record(board, stamp) as findings:
             run = Run(board=board, label=label or board, stamp=stamp,
-                      health=scan_health.RunHealth(board))
+                      health=scan_health.RunHealth(board),
+                      raw_dir=OUTPUTS / board / "raw")
             run.raw_dir.mkdir(parents=True, exist_ok=True)
 
             yield run

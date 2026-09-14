@@ -31,10 +31,12 @@ cd web && npm run build                        # rebuild dashboard/static/ after
 docker compose up -d --build                   # dashboard + runner + timer, 127.0.0.1:8080
 
 # Scans (the runner shells out to exactly these)
-.venv/bin/python reed_crawler/run_reed_scan.py --config config.yml [--limit N]
-.venv/bin/python reed_crawler/totaljobs_pipeline.py scan --config config.yml [--limit N]
+# Every board takes the same flags: --limit N for a smoke test, --allow-disabled to scan one
+# config.yml has switched off. Neither is ever in scan_all.COMMANDS.
+.venv/bin/python reed_crawler/run_reed_scan.py --config config.yml [--limit N] [--allow-disabled]
+.venv/bin/python reed_crawler/totaljobs_pipeline.py scan --config config.yml [--limit N] [--allow-disabled]
 .venv/bin/python reed_crawler/talent_pipeline.py scan --config config.yml --limit 1
-.venv/bin/python reed_crawler/haystack_pipeline.py scan --config config.yml [--limit N]
+.venv/bin/python reed_crawler/haystack_pipeline.py scan --config config.yml [--limit N] [--allow-disabled]
 .venv/bin/python reed_crawler/indeed_pipeline.py scan --config config.yml --allow-disabled
 .venv/bin/python reed_crawler/adzuna_pipeline.py scan --config config.yml --allow-disabled
 .venv/bin/python reed_crawler/linkedin_pipeline.py scan --config config.yml --allow-disabled [--limit N]
@@ -75,7 +77,11 @@ config.yml → scan (per-board lock, jittered delays)
                      web/  →  React + shadcn/ui, built into dashboard/static/
 ```
 
-**Crawler modules.** `board_config.py` builds every board's URLs and owns `run_stamp`, `raw_capture_stem` and `jittered`. `lead.py` is the record every board produces — the report row's only definition — with `dedupe` and `slug`. `salary.py` and `scan_lock.py` and `scan_health.py` are shared. Each board then has its own parsing: `reed_utils.py` + `run_reed_scan.py`, `totaljobs_pipeline.py`, `talent_pipeline.py`, `indeed_pipeline.py`, `adzuna_pipeline.py`, `haystack_pipeline.py`, `linkedin_pipeline.py`, `email_pipeline.py`, and `aggregator_pipeline.py` + `aggregator_feeds.py` for the feed boards.
+**Crawler modules.** Three modules hold what every board does, and each board holds only what is its own — how to reach its host and how to read a card. `board_config.py` builds every board's URLs and owns `run_stamp`, `raw_capture_stem` and `jittered`. `lead.py` is the record every board produces — the report row's only definition — with `dedupe` and `slug`. `scan_run.py` is a run: the lock, the stamp, the run record, the salary parser, dedupe, the sort, both report writes and the verdict. `scan_search.py` drives a board's searches: the spec loop, stamped captures, the health tally, the delay between requests and the per-search request budget.
+
+A board hands its fetches to `scan_search` as an async generator yielding `Fetched` — the response, the leads read from it, the files worth keeping. Generators are lazy, so a board cannot make its next request until `scan_search` has classified the last one and waited: the request rate and the budget are held in one place for all of them. A board that pages within one search (LinkedIn, the feeds) or retries one (Haystack) writes that loop itself, because that is the part that differs. See `docs/adr/0002-one-scan-run.md`.
+
+`salary.py` and `scan_lock.py` and `scan_health.py` are shared. Each board then has its own parsing: `reed_utils.py` + `run_reed_scan.py`, `totaljobs_pipeline.py`, `talent_pipeline.py`, `indeed_pipeline.py`, `adzuna_pipeline.py`, `haystack_pipeline.py`, `linkedin_pipeline.py`, `email_pipeline.py`, and `aggregator_pipeline.py` + `aggregator_feeds.py` for the feed boards.
 
 **Adzuna is an API, not a crawl.** `adzuna.co.uk` answers every automated fetch with a CloudFront 403 — curl and headless Chromium alike, any user agent — so `adzuna_pipeline.py` reads Adzuna's free JSON search API instead. No crawl4ai, no browser, no card parsing, and pay arrives as numbers so `salary.py` is not asked to parse it back out of prose. Credentials (free from developer.adzuna.com) live in `boards.adzuna.app_id` / `app_key` or `ADZUNA_APP_ID` / `ADZUNA_APP_KEY`, and are attached at request time so they never reach a raw capture, a report or the log. Raw captures are `.json` here; everything downstream sees the same report shape as any other board.
 
@@ -105,7 +111,7 @@ Each of these was learned from a bug. Breaking one silently corrupts data or get
 - **A board asks for everything its config names.** There is no cap on the number of searches: every title in the board's `title_groups` is asked against every location in its `location_groups`, every run. `max_pages_per_run` used to truncate that list, and a truncated product silently starved whole titles — Reed asked 2 of its 5 titles for months, Talent 2 of its 4 rows. The cap was deleted rather than made fair; what bounds a scan now is `delay_seconds` and, on a board that pages, `pages_per_search` / `pages_per_query`. See `docs/adr/0001-no-cap-on-searches.md` before reintroducing one.
 - **Raw captures carry the run stamp.** They were once written to a deterministic name, so each scan destroyed the previous evidence for that search and concurrent scans corrupted each other. `raw_capture_stem` exists for this.
 - **An empty page body is a failure, not zero results.** A crawl can return success with nothing in it. `scan_health` classifies this so a board cannot silently stop producing data.
-- **One scan per board.** The lock lives in the scan entrypoints so the external cron inherits it without being modified. Exit 75 means busy, not broken.
+- **One scan per board.** The lock is taken by `scan_run.begin`, which every board's scan goes through, so the external cron inherits it without being modified. Exit 75 means busy, not broken.
 - **The downstream workspace is written to only when a person asks.** `dashboard/pipeline.py` only ever reads it, and a test asserts nothing under it is modified. `reed_crawler/ingest_jobspy.py` is the sole writer, reachable from the terminal or the dashboard's `/ingest` button — never from `scan_all.COMMANDS`, so no schedule can reach it. It appends inside the pipeline's Pending section; appending at the end of the file buries entries under the processed section, where career-ops never looks.
 - **An alert mail whose template is unrecognised is named, not guessed at.** A digest subject names one of its 25 jobs, so attributing it to all of them invents data — those rows get `Job lead (email)` instead, and the run prints the label, id and subject so a changed layout reads as work to do rather than as missing jobs.
 - **Per-recipient links are stripped before a lead is kept.** Totaljobs wraps a posting in `/v2/magiclink/exchange?magicLink=<JWT>`, LinkedIn and Jobright append per-email tracking, Haystack links every job through `/go?j=<uuid>` with a subscriber token attached, Welcome to the Jungle serves its postings as `app.otta.com/jobs/<id>?token=<JWT>` where the token signs this recipient in, and Totaljobs digests and every Welcome to the Jungle link go through trackers (`totaljobsmail.com`, `ct.sendgrid.net`) that must be resolved by reading `Location` headers only — fetching the destination hits Cloudflare. Untouched, one posting yields a different URL in every mail and dedup never fires.
@@ -127,7 +133,7 @@ Each of these was learned from a bug. Breaking one silently corrupts data or get
 
 ## Config
 
-`config.yml` is the single input; `config.example.yml` is the committed template and `config.yml` is gitignored. Board sections reference named groups from `search.titles` / `search.locations`. The flat top-level keys at the bottom are a legacy fallback still read by `run_reed_scan.build_specs`.
+`config.yml` is the single input; `config.example.yml` is the committed template and `config.yml` is gitignored. Board sections reference named groups from `search.titles` / `search.locations`. The flat top-level keys at the bottom are dead: `run_reed_scan.build_specs` was the last reader and Reed now builds its searches through `build_board_urls` like every other board.
 
 `tests/test_talent_pipeline.py` asserts against **`config.example.yml`**, so editing its talent block breaks that test — update both together, and keep the two files structurally in sync.
 

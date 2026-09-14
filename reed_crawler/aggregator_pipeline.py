@@ -23,10 +23,10 @@ bounds — but nothing in the code reveals that constraint exists, hence this pa
 from __future__ import annotations
 
 import argparse
+import asyncio
 import gzip
 import json
 import re
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -36,11 +36,12 @@ from defusedxml import ElementTree
 
 import aggregator_feeds
 from aggregator_feeds import FEEDS
-from board_config import build_board_urls, jittered, load_config, raw_capture_stem
-from lead import Lead, slug
+from board_config import build_board_urls, load_config
+from lead import Lead
 import salary as salary_parser
 import scan_health
 import scan_run
+import scan_search
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -117,7 +118,8 @@ def leads_from(payload: object, spec: dict, feed: aggregator_feeds.Feed) -> tupl
     return leads, rows
 
 
-def scan(feed_name: str, cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> Path:
+async def scan(feed_name: str, cfg: dict, limit: int | None = None,
+               allow_disabled: bool = False) -> Path:
     feed = FEEDS[feed_name]
     board = scan_run.enabled(cfg, feed_name, allow_disabled)
     specs = build_board_urls(
@@ -131,39 +133,34 @@ def scan(feed_name: str, cfg: dict, limit: int | None = None, allow_disabled: bo
     max_items = int(board.get("max_items", 0))
     delay = float(board.get("delay_seconds", (cfg.get("crawl") or {}).get("delay_seconds", 15)))
 
+    async def fetches(spec):
+        """Pages of one query, until the feed says it has run out.
+
+        The page after the last one is never requested: an honestly empty reply is short
+        enough to classify as an empty body, which would read as a broken board rather than
+        as a finished search.
+        """
+        query = "" if spec["title"] == feed.label else spec["title"]
+        for page in range(1, pages_per_query + 1):
+            url = spec["url"] if page == 1 else feed.page_url(query, spec["location"], page, board)
+            print(f"Querying {feed.label} {spec['title']!r} page {page}: {url}")
+            response, payload = await asyncio.to_thread(fetch, url, feed)
+            capture = {feed.capture_ext: response.markdown or ""}
+            suffix = f"p{page}" if page > 1 else ""
+            outcome = scan_health.classify(response)
+            if outcome != scan_health.OK:
+                print(f"  {outcome} status={response.status_code} error={response.error_message}")
+                yield scan_search.Fetched(response, captures=capture, suffix=suffix)
+                return
+            leads, rows = leads_from(payload, spec, feed)
+            print(f"  {outcome} status={response.status_code} records={len(rows)} leads={len(leads)}")
+            yield scan_search.Fetched(response, leads, captures=capture, suffix=suffix)
+            if not feed.more(payload, page, rows):
+                return
+
     with scan_run.begin(feed_name, cfg, label=feed.label, allow_disabled=allow_disabled,
                         dedupe_key=feed_identity, keep=max_items) as run:
-        requests = 0
-        for spec in specs:
-            query = "" if spec["title"] == feed.label else spec["title"]
-            for page in range(1, pages_per_query + 1):
-                url = spec["url"] if page == 1 else feed.page_url(query, spec["location"], page, board)
-                print(f"Querying {feed.label} {spec['title']!r} page {page}: {url}")
-                response, payload = fetch(url, feed)
-                requests += 1
-                parts = [slug(spec["title"])]
-                if spec["location"]:
-                    parts.append(slug(spec["location"]))
-                if page > 1:
-                    parts.append(f"p{page}")
-                stem = raw_capture_stem("__".join(parts), run.stamp)
-                (run.raw_dir / f"{stem}.{feed.capture_ext}").write_text(
-                    response.markdown or "", encoding="utf-8")
-                outcome = run.health.record(response)
-                if outcome != scan_health.OK:
-                    print(f"  {outcome} status={response.status_code} error={response.error_message}")
-                    break
-                leads, rows = leads_from(payload, spec, feed)
-                print(f"  {outcome} status={response.status_code} records={len(rows)} leads={len(leads)}")
-                run.leads.extend(leads)
-                # Never request the page after the last one: an honestly empty reply is
-                # short enough to classify as empty-body, which would read as a broken
-                # board rather than as a finished search.
-                if not feed.more(payload, page, rows):
-                    break
-                time.sleep(jittered(delay))
-            time.sleep(jittered(delay))
-        run.searches = len(specs)
+        await scan_search.search(run, specs, fetches, delay=delay, pages_per_spec=pages_per_query)
     return run.report
 
 
@@ -176,7 +173,7 @@ def main() -> None:
     ap.add_argument("--allow-disabled", action="store_true",
                     help="scan even when the board is disabled; for manual smoke tests")
     args = ap.parse_args()
-    scan(args.feed, load_config(Path(args.config)), args.limit, args.allow_disabled)
+    asyncio.run(scan(args.feed, load_config(Path(args.config)), args.limit, args.allow_disabled))
 
 
 if __name__ == "__main__":

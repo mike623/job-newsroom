@@ -29,17 +29,3 @@ def test_raw_capture_stem_keeps_different_searches_apart_within_one_run() -> Non
     manchester = board_config.raw_capture_stem("senior_software_engineer__manchester", stamp)
 
     assert leeds != manchester
-
-
-def test_scan_entrypoints_stamp_their_raw_captures() -> None:
-    # Guards the regression this fixes: a capture path built without the run stamp silently
-    # overwrites the previous scan's evidence for that search.
-    for name in ["run_reed_scan.py", "totaljobs_pipeline.py", "talent_pipeline.py", "indeed_pipeline.py",
-                 "adzuna_pipeline.py", "haystack_pipeline.py", "linkedin_pipeline.py",
-                 "aggregator_pipeline.py"]:
-        source = (ROOT / "reed_crawler" / name).read_text(encoding="utf-8")
-        # aggregator_pipeline writes into a per-feed directory and picks the extension from
-        # the feed, so neither can be a module constant. The stem is what this guards.
-        writes = re.findall(r"\((?:RAW|raw_dir|run\.raw_dir) / f\"\{(\w+)\}\.[^\"]+\"\)", source)
-        assert writes, f"{name}: found no raw capture writes to check"
-        assert all(w == "stem" for w in writes), f"{name}: raw capture written without a run stamp: {writes}"

@@ -24,8 +24,8 @@ refuses to page past `start=1000`, so a search ends there whatever remains.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import re
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -33,12 +33,12 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-from board_config import (build_board_urls, jittered, linkedin_search_url, load_config,
-                          raw_capture_stem, run_stamp)
-from lead import Lead, slug
+from board_config import build_board_urls, linkedin_search_url, load_config
+from lead import Lead
 import salary as salary_parser
 import scan_health
 import scan_run
+import scan_search
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "linkedin"
@@ -135,46 +135,50 @@ def parse_search_cards(html: str, spec: dict) -> list[Lead]:
     return leads
 
 
-def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> Path:
+async def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> Path:
     board = scan_run.enabled(cfg, "linkedin", allow_disabled)
     specs = build_board_urls({**cfg, "boards": {**cfg.get("boards", {}), "linkedin": {**board, "enabled": True}}},
                              "linkedin")
     if limit:
         specs = specs[:limit]
-    pages_per_search = int(board.get("pages_per_search", 2))
+    pages_per_search = int(board.get("pages_per_search", 1))
     distance = int(board.get("distance", 30))
     max_age_days = int(board.get("max_age_days", 0))
     delay = float(board.get("delay_seconds", (cfg.get("crawl") or {}).get("delay_seconds", 15)))
 
+    async def fetches(spec):
+        """A search is several requests: the guest endpoint answers ten cards at a time.
+
+        Paging advances by what actually arrived rather than by an assumed page size, and the
+        endpoint refuses to page past 1000 whatever the result count claims. A 429 or a 999 is
+        a block, so the search is abandoned — retrying a throttle is the one response
+        guaranteed to make it worse. The page still yields, so the capture is kept and the
+        request is counted.
+        """
+        print(f"Querying LinkedIn {spec['title']!r} / {spec['location']!r}")
+        start = 0
+        while True:
+            url = linkedin_search_url(spec["title"], spec["location"], distance, max_age_days, start)
+            response = await asyncio.to_thread(fetch, url)
+            capture = {"html": response.html or ""}
+            if response.status_code in BLOCKED_STATUSES:
+                print(f"  blocked status={response.status_code} — abandoning this search")
+                yield scan_search.Fetched(response, captures=capture, suffix=f"start{start}")
+                return
+            outcome = scan_health.classify(response)
+            if outcome != scan_health.OK:
+                print(f"  {outcome} status={response.status_code} error={response.error_message}")
+                yield scan_search.Fetched(response, captures=capture, suffix=f"start{start}")
+                return
+            leads = parse_search_cards(response.html, spec)
+            print(f"  {outcome} status={response.status_code} start={start} leads={len(leads)}")
+            yield scan_search.Fetched(response, leads, captures=capture, suffix=f"start{start}")
+            start += len(leads)
+            if not leads or start >= MAX_START:
+                return
+
     with scan_run.begin("linkedin", cfg, label="LinkedIn", allow_disabled=allow_disabled) as run:
-        for spec in specs:
-            print(f"Querying LinkedIn {spec['title']!r} / {spec['location']!r}")
-            start = 0
-            for page in range(pages_per_search):
-                url = linkedin_search_url(spec["title"], spec["location"], distance, max_age_days, start)
-                response = fetch(url)
-                stem = raw_capture_stem(
-                    f"{slug(spec['title'])}__{slug(spec['location'])}__start{start}", run.stamp)
-                (run.raw_dir / f"{stem}.html").write_text(response.html or "", encoding="utf-8")
-                outcome = run.health.record(response)
-                if response.status_code in BLOCKED_STATUSES:
-                    # Retrying a throttle is the one response guaranteed to make it worse.
-                    print(f"  blocked status={response.status_code} — abandoning this search")
-                    break
-                if outcome != scan_health.OK:
-                    print(f"  {outcome} status={response.status_code} error={response.error_message}")
-                    break
-                leads = parse_search_cards(response.html, spec)
-                print(f"  {outcome} status={response.status_code} start={start} leads={len(leads)}")
-                run.leads.extend(leads)
-                # Paging advances by what arrived, not by an assumed page size.
-                start += len(leads)
-                if not leads or start >= MAX_START:
-                    break
-                if page + 1 < pages_per_search:
-                    time.sleep(jittered(delay))
-            time.sleep(jittered(delay))
-        run.searches = len(specs)
+        await scan_search.search(run, specs, fetches, delay=delay, pages_per_spec=pages_per_search)
     return run.report
 
 
@@ -186,7 +190,7 @@ def main() -> None:
     ap.add_argument("--allow-disabled", action="store_true",
                     help="manual smoke test even when boards.linkedin.enabled=false")
     args = ap.parse_args()
-    scan(load_config(ROOT / args.config), args.limit, args.allow_disabled)
+    asyncio.run(scan(load_config(ROOT / args.config), args.limit, args.allow_disabled))
 
 
 if __name__ == "__main__":

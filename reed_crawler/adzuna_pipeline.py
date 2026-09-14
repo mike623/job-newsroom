@@ -17,20 +17,21 @@ never written to a capture, a report or the log.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import re
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
-from board_config import build_board_urls, load_config, jittered, raw_capture_stem
-from lead import Lead, slug
+from board_config import build_board_urls, load_config
+from lead import Lead
 import scan_health
 import scan_run
+import scan_search
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "adzuna"
@@ -126,28 +127,32 @@ def parse_results(payload: dict, spec: dict) -> list[Lead]:
     return leads
 
 
-def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> Path:
+async def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False) -> Path:
     board = scan_run.enabled(cfg, "adzuna", allow_disabled)
     app_id, app_key = credentials(cfg)
     specs = build_board_urls({**cfg, "boards": {**cfg.get("boards", {}), "adzuna": {**board, "enabled": True}}}, "adzuna")
     if limit:
         specs = specs[:limit]
+    delay = float(board.get("delay_seconds", (cfg.get("crawl") or {}).get("delay_seconds", 15)))
+
+    async def fetches(spec):
+        """One request per search: the API answers a whole page of results at once."""
+        print(f"Querying Adzuna {spec['title']!r} / {spec['location']!r}: {spec['url']}")
+        # urllib is blocking, and this is the one request this search makes. Off the event
+        # loop so the shape matches the crawled boards without pulling in an async client
+        # for a board that makes one call and then waits fifteen seconds.
+        response, payload = await asyncio.to_thread(fetch, spec["url"], app_id, app_key)
+        outcome = scan_health.classify(response)
+        if outcome != scan_health.OK:
+            print(f"  {outcome} status={response.status_code} error={response.error_message}")
+            yield scan_search.Fetched(response, captures={"json": response.markdown})
+            return
+        leads = parse_results(payload, spec)
+        print(f"  {outcome} status={response.status_code} matches={payload.get('count')} leads={len(leads)}")
+        yield scan_search.Fetched(response, leads, captures={"json": response.markdown})
 
     with scan_run.begin("adzuna", cfg, label="Adzuna", allow_disabled=allow_disabled) as run:
-        for spec in specs:
-            print(f"Querying Adzuna {spec['title']!r} / {spec['location']!r}: {spec['url']}")
-            response, payload = fetch(spec["url"], app_id, app_key)
-            stem = raw_capture_stem(f"{slug(spec['title'])}__{slug(spec['location'])}", run.stamp)
-            (run.raw_dir / f"{stem}.json").write_text(response.markdown or "", encoding="utf-8")
-            outcome = run.health.record(response)
-            if outcome != scan_health.OK:
-                print(f"  {outcome} status={response.status_code} error={response.error_message}")
-            else:
-                leads = parse_results(payload, spec)
-                print(f"  {outcome} status={response.status_code} matches={payload.get('count')} leads={len(leads)}")
-                run.leads.extend(leads)
-            time.sleep(jittered(float((cfg.get("crawl") or {}).get("delay_seconds", 15))))
-        run.searches = len(specs)
+        await scan_search.search(run, specs, fetches, delay=delay)
     return run.report
 
 
@@ -158,7 +163,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int)
     ap.add_argument("--allow-disabled", action="store_true", help="manual smoke test even when boards.adzuna.enabled=false")
     args = ap.parse_args()
-    scan(load_config(ROOT / args.config), args.limit, args.allow_disabled)
+    asyncio.run(scan(load_config(ROOT / args.config), args.limit, args.allow_disabled))
 
 
 if __name__ == "__main__":

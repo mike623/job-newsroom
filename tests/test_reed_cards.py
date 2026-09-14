@@ -22,7 +22,8 @@ CAPTURE = """\
 ## [Category page](https://www.reed.co.uk/jobs/software-jobs "Software jobs")
 """
 
-SPEC = reed_utils.SearchSpec(title="senior software engineer", location="leeds", proximity=50)
+SPEC = {"board": "reed", "title": "senior software engineer", "location": "leeds",
+        "url": "https://www.reed.co.uk/jobs/senior-software-engineer-jobs-in-leeds?proximity=50"}
 
 
 def test_the_quoted_link_title_does_not_end_up_in_the_url():

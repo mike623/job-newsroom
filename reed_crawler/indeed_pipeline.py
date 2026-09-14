@@ -12,9 +12,11 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
-from board_config import build_board_urls, load_config, jittered, raw_capture_stem
+from board_config import build_board_urls, load_config
 from lead import Lead, slug
+import scan_health
 import scan_run
+import scan_search
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "indeed"
@@ -154,22 +156,21 @@ async def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False
                              "indeed")
     if limit:
         specs = specs[:limit]
+    delay = float((cfg.get("crawl") or {}).get("delay_seconds", 15))
 
     with scan_run.begin("indeed", cfg, label="Indeed", allow_disabled=allow_disabled) as run:
         async with AsyncWebCrawler(config=browser_config(cfg)) as crawler:
-            for spec in specs:
+
+            async def fetches(spec):
+                """One crawl per search: this board's results are a single page of cards."""
                 print(f"Crawling Indeed {spec['title']!r} / {spec['location']!r}: {spec['url']}")
                 r = await crawler.arun(url=spec["url"], config=crawl_config(cfg))
-                md = str(r.markdown or "")
-                html = r.html or ""
-                stem = raw_capture_stem(f"{slug(spec['title'])}__{slug(spec['location'])}", run.stamp)
-                (run.raw_dir / f"{stem}.md").write_text(md, encoding="utf-8")
-                (run.raw_dir / f"{stem}.html").write_text(html, encoding="utf-8")
                 leads = parse_result(r, spec)
-                print(f"  status={r.status_code} {run.health.record(r)} leads={len(leads)}")
-                run.leads.extend(leads)
-                await asyncio.sleep(jittered(float((cfg.get("crawl") or {}).get("delay_seconds", 15))))
-        run.searches = len(specs)
+                print(f"  status={r.status_code} {scan_health.classify(r)} leads={len(leads)}")
+                yield scan_search.Fetched(r, leads, captures={"md": str(r.markdown or ""),
+                                                              "html": r.html or ""})
+
+            await scan_search.search(run, specs, fetches, delay=delay)
     return run.report
 
 

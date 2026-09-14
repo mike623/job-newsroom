@@ -9,37 +9,31 @@ from urllib.parse import urljoin
 import yaml
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
-from board_config import board_locations, board_titles, jittered, raw_capture_stem
+from board_config import build_board_urls
 import scan_health
 import scan_run
-from reed_utils import SearchSpec, parse_jobs_from_markdown, write_report
+import scan_search
+from reed_utils import parse_jobs_from_markdown, write_report
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "reed"
-RAW = OUT / "raw"
 
 
 def load_config(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def build_specs(cfg: dict) -> list[SearchSpec]:
-    # Prefer the board-oriented config shape. Keep flat keys as a fallback for older configs.
-    if cfg.get("boards", {}).get("reed"):
-        board_cfg = cfg["boards"]["reed"]
-        titles = board_titles(cfg, "reed")
-        locations = board_locations(cfg, "reed")
-        proximity = int(board_cfg.get("proximity", cfg.get("proximity", 50)))
-        return [SearchSpec(t, loc, proximity) for t in titles for loc in locations]
-    return [SearchSpec(t, loc, int(cfg.get("proximity", 50))) for t in cfg["titles"] for loc in cfg["locations"]]
+async def crawl_search(crawler: AsyncWebCrawler, spec: dict,
+                       run_config: CrawlerRunConfig) -> scan_search.Fetched:
+    """One search, and the three files Reed keeps of it.
 
-
-async def crawl_search(crawler: AsyncWebCrawler, spec: SearchSpec, run_config: CrawlerRunConfig, stamp: str,
-                       health: scan_health.RunHealth) -> list:
-    print(f"Crawling {spec.title!r} / {spec.location!r}: {spec.url}")
-    result = await crawler.arun(url=spec.url, config=run_config)
+    Reed is the only board that captures the page's link graph as well as its markdown and
+    HTML. It predates the card parsers and was how the markdown parser was checked against
+    what the page actually linked to.
+    """
+    print(f"Crawling {spec['title']!r} / {spec['location']!r}: {spec['url']}")
+    result = await crawler.arun(url=spec["url"], config=run_config)
     md = str(result.markdown or "")
-    html = result.html or ""
 
     links = []
     for group, arr in (result.links or {}).items():
@@ -48,24 +42,20 @@ async def crawl_search(crawler: AsyncWebCrawler, spec: SearchSpec, run_config: C
             links.append({
                 "group": group,
                 "text": (link.get("text") or "").strip()[:180],
-                "url": urljoin(spec.url, href),
+                "url": urljoin(spec["url"], href),
             })
+    captures = {"md": md, "html": result.html or "",
+                "links.json": json.dumps(links, indent=2)}
 
-    RAW.mkdir(parents=True, exist_ok=True)
-    stem = raw_capture_stem(spec.name, stamp)
-    (RAW / f"{stem}.md").write_text(md, encoding="utf-8")
-    (RAW / f"{stem}.html").write_text(html, encoding="utf-8")
-    (RAW / f"{stem}.links.json").write_text(json.dumps(links, indent=2), encoding="utf-8")
-
-    outcome = health.record(result)
+    outcome = scan_health.classify(result)
     if outcome != scan_health.OK:
         # An empty body is a broken fetch, not a search with no matches — see scan_health.
         print(f"  {outcome} status={result.status_code} markdown={len(md)} error={result.error_message}")
-        return []
+        return scan_search.Fetched(result, captures=captures)
 
     jobs = parse_jobs_from_markdown(md, spec)
     print(f"  {outcome} status={result.status_code} markdown={len(md)} jobs={len(jobs)}")
-    return jobs
+    return scan_search.Fetched(result, jobs, captures=captures)
 
 
 async def main() -> None:
@@ -78,7 +68,9 @@ async def main() -> None:
 
     cfg = load_config(ROOT / args.config)
     crawl_cfg = cfg.get("crawl", {})
-    specs = build_specs(cfg)
+    specs = build_board_urls(
+        {**cfg, "boards": {**cfg.get("boards", {}), "reed": {**(cfg.get("boards") or {}).get("reed", {}), "enabled": True}}},
+        "reed")
     if args.limit:
         specs = specs[: args.limit]
 
@@ -103,12 +95,15 @@ async def main() -> None:
         screenshot=False,
     )
 
+    async def fetches(spec):
+        """One crawl per search."""
+        yield await crawl_search(crawler, spec, run_config)
+
     with scan_run.begin("reed", cfg, label="Reed", allow_disabled=args.allow_disabled) as run:
         async with AsyncWebCrawler(config=browser_config) as crawler:
-            for spec in specs:
-                run.leads.extend(await crawl_search(crawler, spec, run_config, run.stamp, run.health))
-                await asyncio.sleep(jittered(float(crawl_cfg.get("delay_seconds", cfg.get("delay_seconds", 2)))))
-        run.searches = len(specs)
+            await scan_search.search(run, specs, fetches,
+                                     delay=float(crawl_cfg.get("delay_seconds",
+                                                               cfg.get("delay_seconds", 2))))
 
     # Reed alone also writes a readable summary beside its reports.
     report_md = run.report.with_name(f"reed_report_{run.stamp}.md")
