@@ -56,8 +56,13 @@ boards:
       delay_seconds: 20
 
   indeed:
-    # Built/probed, but disabled by default. Indeed is high-friction and some
-    # postings are generic/non-live adverts, hence reject_phrases below.
+    # Disabled, and it has to stay that way for any scheduled run: Indeed's search is
+    # behind a Cloudflare JS challenge that only real Chrome with a window on screen
+    # gets past, so the container cannot scan this board at all. Run it by hand from a
+    # desktop session, where --allow-disabled is what gets past this line:
+    #   .venv/bin/python reed_crawler/indeed_pipeline.py scan --config config.yml --allow-disabled
+    # Indeed is also high-friction and some postings are generic/non-live adverts,
+    # hence reject_phrases below.
     enabled: false
     title_groups:
       - primary
