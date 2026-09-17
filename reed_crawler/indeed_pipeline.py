@@ -39,14 +39,29 @@ def canonical_job_url(url: str) -> str:
 
 
 def browser_config(cfg: dict) -> BrowserConfig:
-    crawl = cfg.get("crawl", {}) or {}
+    """Real Chrome, on screen. Indeed answers anything else with a Cloudflare challenge.
+
+    Observed on the same URL within minutes of each other: bundled Chromium headless, the
+    same headless behind a different IP, a commercial stealth proxy and real Chrome in
+    `--headless=new` all came back as "Additional Verification Required" with zero cards;
+    real Chrome with a visible window returned 200 and all 16. So `headless` is pinned here
+    rather than read from `crawl.headless` — that key is shared by every board, and the
+    other ten have no reason to open a window.
+
+    No user agent is set. The string this board used to send named Chrome 124 while the
+    browser underneath is whatever is installed, and a UA that disagrees with the browser is
+    itself a signal. Chrome's own is correct by construction.
+
+    The cost is that this board only runs where there is a desktop session to draw on: not
+    in the container, which is why it is disabled in config.yml and run by hand.
+    """
     return BrowserConfig(
-        headless=bool(crawl.get("headless", True)),
+        headless=False,
         browser_type="chromium",
+        chrome_channel="chrome",
         verbose=True,
         viewport_width=1920,
         viewport_height=1080,
-        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     )
 
 
@@ -159,18 +174,26 @@ async def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False
     delay = float((cfg.get("crawl") or {}).get("delay_seconds", 15))
 
     with scan_run.begin("indeed", cfg, label="Indeed", allow_disabled=allow_disabled) as run:
-        async with AsyncWebCrawler(config=browser_config(cfg)) as crawler:
 
-            async def fetches(spec):
-                """One crawl per search: this board's results are a single page of cards."""
-                print(f"Crawling Indeed {spec['title']!r} / {spec['location']!r}: {spec['url']}")
+        async def fetches(spec):
+            """One crawl per search, in a browser of its own.
+
+            Cloudflare gives a session exactly one page: measured across a full 20-search run,
+            the first search returned 200 with all 16 cards and the other 19 came back 403 —
+            and a second process started two minutes later was granted its one page again. So
+            what is being counted is requests per browser, not requests per minute, and the
+            delay between searches cannot help. Every other board shares one crawler across
+            its searches, which is cheaper and is what those hosts allow.
+            """
+            print(f"Crawling Indeed {spec['title']!r} / {spec['location']!r}: {spec['url']}")
+            async with AsyncWebCrawler(config=browser_config(cfg)) as crawler:
                 r = await crawler.arun(url=spec["url"], config=crawl_config(cfg))
-                leads = parse_result(r, spec)
-                print(f"  status={r.status_code} {scan_health.classify(r)} leads={len(leads)}")
-                yield scan_search.Fetched(r, leads, captures={"md": str(r.markdown or ""),
-                                                              "html": r.html or ""})
+            leads = parse_result(r, spec)
+            print(f"  status={r.status_code} {scan_health.classify(r)} leads={len(leads)}")
+            yield scan_search.Fetched(r, leads, captures={"md": str(r.markdown or ""),
+                                                          "html": r.html or ""})
 
-            await scan_search.search(run, specs, fetches, delay=delay)
+        await scan_search.search(run, specs, fetches, delay=delay)
     return run.report
 
 
