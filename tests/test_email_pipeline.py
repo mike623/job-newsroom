@@ -99,6 +99,21 @@ def test_url_rules_keep_postings_and_drop_search_and_footer():
     assert not email.allows_url("jobright", "https://www.linkedin.com/jobs/view/42")
 
 
+def test_a_digest_gives_up_every_posting_it_links_to():
+    # A job24 digest carries 20 jobs. `max_urls_per_message` stopped at the first 12, and the
+    # loss was silent: a mail yielding 12 leads reads exactly like a mail that had 12 jobs.
+    body = "\n".join(f"Role {n} https://www.linkedin.com/jobs/view/41000000{n:02d}"
+                     for n in range(20))
+    found = email.extract_urls("linkedin", body)
+    assert len(found) == 20, "a cap is truncating the digest again"
+
+    # Footer and nav junk is refused by allows_url, not by counting — so it cannot crowd
+    # postings out however much of it a mail carries.
+    noisy = body + "\n" + "\n".join(
+        ["https://www.linkedin.com/comm/jobs/search-results/?keywords=engineer"] * 50)
+    assert len(email.extract_urls("linkedin", noisy)) == 20
+
+
 def test_per_recipient_tracking_is_stripped_so_dedup_works():
     magic = ("https://www.totaljobs.com/v2/magiclink/exchange?magicLink=eyJhbGciOi.JWT.sig"
              "&returnUrl=%2Fjob%2F98765432%2Fapplication%2Fredirection%3Fsource%3Demail")
@@ -139,7 +154,7 @@ open-source business intelligence tool
 
 def leads_for(label, provider, subject, sender, body):
     envelope = {"id": "1", "subject": subject, "from": {"addr": sender}, "date": "2026-08-18 08:01+00:00"}
-    return email.leads_from_message({"label": label, "provider": provider}, envelope, body, 12)
+    return email.leads_from_message({"label": label, "provider": provider}, envelope, body)
 
 
 def test_indeed_digest_gives_each_job_its_own_fields():
@@ -393,7 +408,7 @@ def test_a_linkedin_single_job_alert_reads_the_card_not_the_intro() -> None:
     # became the job title and shunted company and location along by one — eight stored jobs
     # read "A new job matches your preferences." with the real title filed as the company.
     template = email.detect_template("linkedin", LINKEDIN_SINGLE)
-    found = email.extract_urls("linkedin", LINKEDIN_SINGLE, 10)
+    found = email.extract_urls("linkedin", LINKEDIN_SINGLE)
 
     per_job = email.job_meta_from_body(template, LINKEDIN_SINGLE, {raw: url for raw, url in found})
     card = next(iter(per_job.values()))

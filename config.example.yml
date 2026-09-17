@@ -144,7 +144,6 @@ boards:
     enabled: false
     messages_per_label: 25   # newest N per label per run
     max_age_days: 14         # ignore mail older than this
-    max_urls_per_message: 12 # a digest links its own footer as well as its jobs
     mark_read: false         # flag mail that produced leads as seen, and list only unseen
                              # mail, so each run reads what has arrived since the last one
     labels:
@@ -162,8 +161,8 @@ boards:
         provider: welcometothejungle
       # 24recruitmentmail.com re-mails three boards' adverts — talent.com, joblookup.com and
       # thebigjobsite.com — behind one click wrapper, so the destination decides which board a
-      # lead belongs to, not the sender. These digests carry 20 jobs each; raise
-      # max_urls_per_message above if you want all of them rather than the first 12.
+      # lead belongs to, not the sender. These digests carry 20 jobs each, and all 20 are kept
+      # — the cap that used to stop at the first 12 is gone.
       - label: job/discovery/job24
         provider: job24
 

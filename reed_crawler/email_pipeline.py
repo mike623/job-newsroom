@@ -516,22 +516,27 @@ def normalise_raw_url(s: str) -> str:
     return re.sub(r"[),.;]+$", "", str(s).replace("&amp;", "&"))
 
 
-def extract_urls(provider: str, text: str, max_urls: int) -> list[tuple[str, str]]:
+def extract_urls(provider: str, text: str) -> list[tuple[str, str]]:
     """[(raw, url)] — raw as it appears in the body, url the canonical posting.
 
     The raw form is kept because it is what lines a URL up with the text around it.
+
+    A message gives up every posting it links to. There was a `max_urls_per_message` cap of 12
+    here, and it truncated: a job24 digest carries 20 jobs, so eight were dropped every run,
+    and the loss was invisible because a mail yielding 12 leads reads exactly like a mail that
+    had 12 jobs. Measured over 25 reports, 20 messages ended on exactly 12 — against 5 on 11 —
+    which is the shape of a cap rather than of mail. Same failure as `max_pages_per_run`
+    (docs/adr/0001): a truncated list silently starves whatever sorts last.
+
+    What bounds the work is `allows_url`, which admits only the provider's own posting URLs,
+    and `resolve_redirect`, which makes a request only for a tracker host and only for
+    MAX_REDIRECT_HOPS of them. Footer and nav junk never reaches either.
     """
     by_url: dict[str, str] = {}
-    candidates = 0
     for match in URL_RE.finditer(text):
-        # Cap accepted rows, not candidates: a totaljobs mail wraps footer and nav junk in the
-        # same tracker host as the jobs, so counting candidates starves the real links.
-        if len(by_url) >= max_urls or candidates >= max_urls * 8:
-            break
         raw = normalise_raw_url(match.group(0))
         if not allows_url(provider, raw):
             continue
-        candidates += 1
         resolved = resolve_redirect(raw)
         if is_tracker(raw):
             if resolved == raw or not allows_url(provider, resolved):
@@ -905,7 +910,7 @@ def location_from_subject(subject: str) -> str:
     return "Remote UK" if re.search(r"remote.*uk|uk.*remote", s, re.I) else ""
 
 
-def leads_from_message(meta: dict, envelope: dict, body: str, max_urls: int) -> tuple[list[Lead], str]:
+def leads_from_message(meta: dict, envelope: dict, body: str) -> tuple[list[Lead], str]:
     """One mail's leads, plus the id of the template that read it ("" when unrecognised)."""
     sender = (envelope.get("from") or {}).get("addr") or ""
     # Sender wins over the label: mail gets filed by hand and lands in the wrong folder.
@@ -913,7 +918,7 @@ def leads_from_message(meta: dict, envelope: dict, body: str, max_urls: int) -> 
     board = (PROVIDERS.get(provider) or {}).get("board", provider.title())
     template = detect_template(provider, body)
 
-    found = extract_urls(provider, body, max_urls)
+    found = extract_urls(provider, body)
     subject = envelope.get("subject") or ""
     posted = str(envelope.get("date") or "")[:10] or date.today().isoformat()
     context = clean_text("\n".join([
@@ -990,7 +995,6 @@ def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False,
 
     labels = labels_from(cfg)
     per_label = int(limit or board.get("messages_per_label", 25))
-    max_urls = int(board.get("max_urls_per_message", 12))
     if mark_read is None:
         mark_read = bool(board.get("mark_read", False))
     if not since:
@@ -1022,7 +1026,7 @@ def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False,
                 except MailError as failure:
                     print(f"  message {envelope.get('id')}: {failure}")
                     continue
-                leads, template = leads_from_message(meta, envelope, body, max_urls)
+                leads, template = leads_from_message(meta, envelope, body)
                 key = template or f"{meta['provider']}:unrecognized"
                 templates[key] = templates.get(key, 0) + 1
                 # A silent parse failure looks identical to a quiet inbox — name the mail so
