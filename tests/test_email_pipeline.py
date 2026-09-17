@@ -406,3 +406,190 @@ def test_an_unknown_linkedin_intro_is_left_to_the_subject_line() -> None:
     # The backstop for the next intro wording BLOCK_NOISE has not been taught: say nothing
     # rather than promote it to a title and invent the fields beneath it.
     assert email.linkedin_listing(["Your job alert for engineer", "Acme", "Leeds"], [], "") == {}
+
+
+# --------------------------------------------------------------------------- re-mailed boards
+
+def click_track(destination: str, feed: str = "joblookup") -> str:
+    """A 24recruitmentmail.com wrapper around `destination`, as the mail writes it."""
+    import base64
+    blob = base64.urlsafe_b64encode(destination.encode()).decode().rstrip("=")
+    return (f"http://24recruitmentmail.com/sj-neuvoo/email_click_track.php?id=4600925&a={feed}"
+            f"&key=namike623@gmail.com&sdate=2026-09-14&page={blob}")
+
+
+JOB24_JOBLOOKUP = """\
+Hi Tze kin Wong, you have some new matching jobs.
+If you are no longer looking for jobs, you can
+Unsubscribe
+http://24recruitmentmail.com/sj-neuvoo/unsubscribe_all.php?id=4600925&key=someone@example.com
+Staff Software Engineer - Back End
+{view}
+NEW
+Capital One UK, LONDON, ENG
+more
+details
+{again}
+"""
+
+JOB24_TALENT = """\
+Recommended Jobs for You
+Good Match
+Senior Software Engineer
+{view}
+Cambridge, England, gb
+C# back-end RESTful microservices, driving sustainability and change
+more details
+{again}
+"""
+
+JOB24_BIGJOBSITE = """\
+Busy? Not getting exactly matching jobs?
+Update Profile
+http://24recruitmentmail.com/edit-profile.php?key=someone@example.com
+Software Engineer
+{view}
+Posted by
+Low Carbon Contracts Company
+Negotiable
+FullTime
+Park Central
+View job
+{again}
+"""
+
+JOBLOOKUP_AD = ("https://joblookup.com/uk/dispatch/job/publisher/"
+                "staff-software-engineer-back-end-job-in-london"
+                "?pid=6&psrc=jbe&ptkn=someone%40example.com&ptms=SIGNED&utm_source=publisher-6")
+TALENT_AD = ("https://uk.talent.com/redirect?acquisition_sub_id=&bpid=c7f552e74c4f45f0"
+             "&context=api&id=559886320684969191&initiator=Software+Engineer&l=London")
+BIGJOBSITE_AD = ("https://www.thebigjobsite.com/redirectjob?id=2837D0F0BB4CFD17303C383BFA785D99"
+                 "&source=spelljob&utm_medium=api2&key=506E3364F9135D32A179DCF904EFB750")
+
+
+def job24_leads(body_template: str, advert: str, feed: str):
+    body = body_template.format(view=click_track(advert, feed), again=click_track(advert, feed))
+    return leads_for("job/discovery/job24", "job24", "20 new Software Engineer jobs at London",
+                     "jobs@24recruitmentmail.com", body)
+
+
+def test_a_remailed_lead_belongs_to_the_board_it_links_to_not_the_sender():
+    """One sender, three boards. The destination decides, or the ids are not the boards' own."""
+    joblookup, joblookup_template = job24_leads(JOB24_JOBLOOKUP, JOBLOOKUP_AD, "joblookup")
+    talent, talent_template = job24_leads(JOB24_TALENT, TALENT_AD, "neuvoo")
+    big, big_template = job24_leads(JOB24_BIGJOBSITE, BIGJOBSITE_AD, "attb")
+
+    assert (joblookup_template, talent_template, big_template) == \
+        ("job24-joblookup", "job24-talent", "job24-thebigjobsite")
+    assert [l.job_id for l in joblookup] == \
+        ["joblookup-staff-software-engineer-back-end-job-in-london"]
+    assert [l.job_id for l in talent] == ["talent-559886320684969191"]
+    assert [l.job_id for l in big] == ["thebigjobsite-2837D0F0BB4CFD17303C383BFA785D99"]
+    # Never the re-mailer's own name, which would hide the advert from its real board.
+    assert not any(l.job_id.startswith("job24-") for l in joblookup + talent + big)
+
+
+def test_each_remailed_template_reads_its_own_card():
+    joblookup, _ = job24_leads(JOB24_JOBLOOKUP, JOBLOOKUP_AD, "joblookup")
+    talent, _ = job24_leads(JOB24_TALENT, TALENT_AD, "neuvoo")
+    big, _ = job24_leads(JOB24_BIGJOBSITE, BIGJOBSITE_AD, "attb")
+
+    assert (joblookup[0].role_title, joblookup[0].company, joblookup[0].location) == \
+        ("Staff Software Engineer - Back End", "Capital One UK", "LONDON, ENG")
+    # These mails name no employer, so the board stands in rather than a guess being invented.
+    assert (talent[0].role_title, talent[0].company, talent[0].location) == \
+        ("Senior Software Engineer", "Talent", "Cambridge, England, gb")
+    assert (big[0].role_title, big[0].company, big[0].location) == \
+        ("Software Engineer", "Low Carbon Contracts Company", "Park Central")
+
+
+def test_the_click_wrapper_is_decoded_rather_than_followed(monkeypatch):
+    # Following it would register a click on the recipient's behalf and turn reading the
+    # mailbox into traffic to a board.
+    def refuse(url):
+        raise AssertionError(f"the wrapper was fetched rather than decoded: {url}")
+
+    monkeypatch.setattr(email, "_location", refuse)
+    leads, _ = job24_leads(JOB24_TALENT, TALENT_AD, "neuvoo")
+    assert leads[0].url == "https://uk.talent.com/view?id=559886320684969191"
+
+
+def test_per_recipient_parameters_never_reach_a_remailed_lead():
+    """ptkn is the recipient's own email address; key and bpid are this send."""
+    joblookup, _ = job24_leads(JOB24_JOBLOOKUP, JOBLOOKUP_AD, "joblookup")
+    talent, _ = job24_leads(JOB24_TALENT, TALENT_AD, "neuvoo")
+    big, _ = job24_leads(JOB24_BIGJOBSITE, BIGJOBSITE_AD, "attb")
+
+    for row in joblookup + talent + big:
+        assert "@" not in row.url and "ptkn" not in row.url and "bpid" not in row.url
+        assert "utm_" not in row.url and "24recruitmentmail" not in row.url
+        # The quoted body travels into the report; the wrapper carries the address too.
+        assert "example.com" not in row.raw_block
+
+
+def test_the_talent_board_and_its_remailed_mail_agree_on_an_id():
+    """A job actioned from the mail must read as actioned on the talent board.
+
+    `dashboard/pipeline.py` keys downstream status on (board, job_id), and recognises a
+    talent.com URL by /view?id=<n> — which is the shape the mail's link is reduced to.
+    """
+    import talent_pipeline
+    leads, _ = job24_leads(JOB24_TALENT, TALENT_AD, "neuvoo")
+    assert leads[0].job_id == "talent-" + talent_pipeline.talent_job_id(leads[0].url)
+    assert email.job_id_from_url(leads[0].url) == "talent-559886320684969191"
+
+
+def test_a_stub_plain_part_falls_back_to_the_html_and_leaves_the_flag_alone(monkeypatch):
+    """These mailers ship an empty text part; the HTML is the only body there is.
+
+    `message export` is the only route to it and it applies the seen flag, which would defeat
+    the retry `mark_read` depends on — so an unread message must come back unread.
+    """
+    calls: list[list[str]] = []
+
+    def fake_himalaya(args):
+        calls.append(args)
+        if args[:2] == ["message", "read"]:
+            return "To view the message, please use an HTML compatible email viewer!"
+        if args[:2] == ["message", "export"]:
+            destination = Path(args[args.index("-d") + 1])
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / "index.html").write_text(
+                '<a href="https://uk.talent.com/view?id=42">Senior Engineer</a>', encoding="utf-8")
+            return "exported"
+        return ""
+
+    monkeypatch.setattr(email, "himalaya", fake_himalaya)
+    body = email.read_message("job/discovery/job24", "7", was_seen=False)
+
+    assert "https://uk.talent.com/view?id=42" in body
+    assert ["flag", "remove", "-f", "job/discovery/job24", "7", "seen"] in calls
+
+    calls.clear()
+    email.read_message("job/discovery/job24", "7", was_seen=True)
+    assert not any(args[0] == "flag" for args in calls)
+
+
+def test_a_plain_part_with_links_is_used_as_it_is(monkeypatch):
+    """The extra export is paid only by mail that needs it."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(email, "himalaya",
+                        lambda args: (calls.append(args), LINKEDIN_ALERT)[1])
+    email.read_message("job/discovery/linkedin", "1", was_seen=False)
+    assert [args[:2] for args in calls] == [["message", "read"]]
+
+
+def test_html_is_rendered_with_its_links_where_the_block_parser_can_see_them():
+    text = email.html_to_text(
+        '<div><p>Senior Engineer</p><a href="https://uk.talent.com/view?id=9">apply</a>'
+        '<span>‌ </span><p>London</p></div>')
+    assert "https://uk.talent.com/view?id=9" in text
+    # No blank or whitespace-only lines survive: the block parser treats them as content.
+    assert all(line.strip() for line in text.split("\n"))
+
+
+def test_text_encoded_as_utf8_twice_is_repaired():
+    assert email.undouble_encoded("AxiÅma Search") == "Axiōma Search"
+    # Ordinary text, accented or not, is left exactly as it is.
+    assert email.undouble_encoded("Curaçao Ltd") == "Curaçao Ltd"
+    assert email.undouble_encoded("Acme Search") == "Acme Search"

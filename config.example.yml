@@ -160,6 +160,12 @@ boards:
         provider: haystack
       - label: job/discovery/welcometothejungle
         provider: welcometothejungle
+      # 24recruitmentmail.com re-mails three boards' adverts — talent.com, joblookup.com and
+      # thebigjobsite.com — behind one click wrapper, so the destination decides which board a
+      # lead belongs to, not the sender. These digests carry 20 jobs each; raise
+      # max_urls_per_message above if you want all of them rather than the first 12.
+      - label: job/discovery/job24
+        provider: job24
 
   # --- Aggregator feeds -------------------------------------------------------------
   # One endpoint publishing many companies' postings. Plain HTTP GETs returning JSON or XML,

@@ -16,6 +16,10 @@ Three independent axes — never conflate them:
 Providers ship several templates and change them without notice. Mail whose template is
 unrecognised is named at the end of a run rather than silently yielding subject-derived rows.
 
+The sender names the provider, but the *link* names the board a lead belongs to: a re-mailer
+(see REMAILERS) sends no postings of its own and carries several boards' adverts in one mail,
+so `leads_from_message` asks each unwrapped URL which board it is.
+
 Reading needs the `himalaya` CLI configured against the account (`brew install himalaya`).
 """
 from __future__ import annotations
@@ -26,12 +30,16 @@ import gzip
 import hashlib
 import json
 import re
+import shutil
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit, parse_qs
+
+from bs4 import BeautifulSoup
 
 from board_config import load_config, raw_capture_stem
 from lead import Lead, slug
@@ -56,6 +64,7 @@ DEFAULT_LABELS = [
     {"label": "job/discovery/jobright", "provider": "jobright"},
     {"label": "job/discovery/haystack", "provider": "haystack"},
     {"label": "job/discovery/welcometothejungle", "provider": "welcometothejungle"},
+    {"label": "job/discovery/job24", "provider": "job24"},
 ]
 
 PROVIDERS = {
@@ -68,12 +77,34 @@ PROVIDERS = {
     "welcometothejungle": {
         "board": "Welcome to the Jungle",
         "sender": re.compile(r"@([\w.-]+\.)?(welcometothejungle\.com|otta\.com)$", re.I)},
+    # The three boards below are reached only through the re-mailer under them: none of them
+    # sends its own alert mail here, and joblookup.com cannot be crawled at all (DataDome
+    # answers every job page with a 403, headless Chromium included), so this is the only
+    # route its postings have into the project.
+    "talent": {"board": "Talent", "sender": re.compile(r"@([\w.-]+\.)?talent\.com$", re.I)},
+    "joblookup": {"board": "JobLookup",
+                  "sender": re.compile(r"@([\w.-]+\.)?joblookup\.com$", re.I)},
+    "thebigjobsite": {"board": "The Big Job Site",
+                      "sender": re.compile(r"@([\w.-]+\.)?thebigjobsite\.com$", re.I)},
+    # 24recruitmentmail.com publishes nothing itself: one sender re-mails talent.com,
+    # joblookup.com and thebigjobsite.com adverts behind a single click wrapper, so its board
+    # name is only ever a fallback for a link that failed to unwrap.
+    "job24": {"board": "Job24",
+              "sender": re.compile(r"@([\w.-]+\.)?24recruitmentmail\.com$", re.I)},
 }
+
+# A re-mailer forwards other boards' postings. The sender identifies the mail, but it must
+# never identify a *lead*: the destination does, or the same advert would be filed under the
+# re-mailer on one route and under its own board on another, and dedup would never fire.
+REMAILERS = {"job24": ("talent", "joblookup", "thebigjobsite")}
 
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 HAYSTACK_JOB_PATH = re.compile(rf"^/jobs/({UUID})$", re.I)
 # Welcome to the Jungle serves its postings from Otta, the app it bought: /jobs/<id>.
 OTTA_JOB_PATH = re.compile(r"^/jobs/([\w-]+)$")
+# joblookup.com/<country>/dispatch/job/publisher/<slug> — the slug is the advert. The site
+# states no numeric id anywhere a mail can reach, so the slug is the identity.
+JOBLOOKUP_JOB_PATH = re.compile(r"/dispatch/job/publisher/([\w-]+)$")
 
 
 def haystack_job_uuid(url: str) -> str:
@@ -142,8 +173,74 @@ def list_envelopes(label: str, limit: int, since: str = "", unread_only: bool = 
     return [e for e in envelopes if str(e.get("date") or "")[:10] >= since]
 
 
-def read_message(label: str, message_id) -> str:
-    return himalaya(["message", "read", "--preview", "-f", label, str(message_id)])
+def undouble_encoded(s: str) -> str:
+    """Repair text a sender encoded as UTF-8 twice.
+
+    "Axiōma Search" arrives as the bytes of its own UTF-8 form re-encoded as UTF-8, and reads
+    as "AxiÅ\x8dma Search". Only text that survives the round trip is changed, so ordinary
+    accented names — which do not round-trip through latin-1 — are left exactly as they are.
+    """
+    try:
+        return s.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return s
+
+
+def html_to_text(html: str) -> str:
+    """The HTML part rendered the way the block parser reads a body: text, links on their own.
+
+    `job_meta_from_body` finds a posting by the link that ends its block, so an href that stays
+    in an attribute is a job that cannot be attributed. Each anchor therefore contributes its
+    href as text, exactly as the plain-text mails already write it.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["style", "script", "head", "title"]):
+        tag.decompose()
+    for anchor in soup.find_all("a", href=True):
+        anchor.append(f" {anchor['href']}")
+    text = soup.get_text("\n")
+    # Bulk mailers pad with zero-width and non-breaking spaces; left in, every line is "blank"
+    # to the block parser and the whole mail reads as one empty block.
+    text = re.sub(r"[​‌   ]", " ", text)
+    lines = (re.sub(r"[ \t]+", " ", undouble_encoded(line)).strip() for line in text.split("\n"))
+    return "\n".join(line for line in lines if line)
+
+
+def read_html_part(label: str, message_id, was_seen: bool) -> str:
+    """The message's HTML part, leaving the "seen" flag as it was found.
+
+    Himalaya's `message read` renders the text/plain part, and a mailer that ships a stub there
+    ("To view the message, please use an HTML compatible email viewer!") leaves nothing to
+    parse. `message export` is the only way to the HTML — and it applies the seen flag, which
+    would quietly defeat the retry that `mark_read` depends on: an unrecognised template would
+    be marked read on first sight and never revisited once its adaptor was written. So the flag
+    is put back unless the message was already seen.
+    """
+    directory = Path(tempfile.mkdtemp(prefix="email-part-"))
+    try:
+        himalaya(["message", "export", "-f", label, "-d", str(directory), str(message_id)])
+        part = directory / "index.html"
+        html = part.read_text(encoding="utf-8", errors="replace") if part.exists() else ""
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+        if not was_seen:
+            try:
+                himalaya(["flag", "remove", "-f", label, str(message_id), "seen"])
+            except MailError as failure:
+                print(f"  could not restore unread on {message_id}: {failure}")
+    return html_to_text(html) if html else ""
+
+
+def read_message(label: str, message_id, was_seen: bool = True) -> str:
+    """A mail's body as text, from the HTML part when the plain one says nothing.
+
+    A body with no link in it cannot yield a lead whatever it says, so it is the test for
+    "the plain part is a stub" — and it costs the extra export only on mails that need it.
+    """
+    body = himalaya(["message", "read", "--preview", "-f", label, str(message_id)])
+    if URL_RE.search(body):
+        return body
+    return read_html_part(label, message_id, was_seen) or body
 
 
 def mark_message_read(label: str, message_id) -> None:
@@ -160,7 +257,10 @@ NOISE_URL = re.compile(
 BODY_NOISE_URL = re.compile(
     r"mail\.google|google\.com/url|unsubscribe|preferences|privacy|terms|support\.indeed"
     r"|subscriptions\.indeed|profile\.indeed|account\.indeed|indeed\.com/jobs\?|legal\?"
-    r"|facebook\.com|youtube\.com|x\.com/totaljobs|twitter\.com|totaljobsmail\.com|magiclink", re.I)
+    r"|facebook\.com|youtube\.com|x\.com/totaljobs|twitter\.com|totaljobsmail\.com|magiclink"
+    # Every 24recruitmentmail.com link carries the recipient's email address in `key=`; the
+    # context block is quoted into the report, so the wrapper must not survive into one.
+    r"|24recruitmentmail\.com", re.I)
 SOCIAL_HOSTS = {"facebook.com", "youtube.com", "x.com", "twitter.com"}
 
 
@@ -219,7 +319,37 @@ def allows_url(provider: str, url: str) -> bool:
             return bool(OTTA_JOB_PATH.match(path))
         return bool(re.search(r"(^|\.)welcometothejungle\.com$", host) and "/jobs/" in path)
 
+    if provider == "talent":
+        # The mail links /redirect?...&id=<n>; the board's own shape is /view?id=<n>. Both are
+        # the advert, and unwrap_magic_link reduces the first to the second.
+        return bool(re.search(r"(^|\.)talent\.com$", host)
+                    and re.match(r"^/(redirect|view)$", path)
+                    and (parse_qs(parts.query).get("id") or [""])[0].isdigit())
+
+    if provider == "joblookup":
+        return bool(re.search(r"(^|\.)joblookup\.com$", host)
+                    and JOBLOOKUP_JOB_PATH.search(path))
+
+    if provider == "thebigjobsite":
+        return bool(re.search(r"(^|\.)thebigjobsite\.com$", host)
+                    and path == "/redirectjob"
+                    and (parse_qs(parts.query).get("id") or [""])[0])
+
+    if provider in REMAILERS:
+        # The wrapper stands in front of every link the mail carries, jobs and footer alike;
+        # what one wraps is checked once it has been unwrapped, against the boards this
+        # re-mailer forwards.
+        if is_click_track(url):
+            return True
+        return any(allows_url(name, url) for name in REMAILERS[provider])
+
     return False
+
+
+def is_click_track(url: str) -> bool:
+    """A 24recruitmentmail.com click wrapper: .../email_click_track.php?...&page=<base64url>."""
+    return bool(re.search(r"(^|\.)24recruitmentmail\.com$", host_of(url))
+                and urlsplit(url).path.endswith("/email_click_track.php"))
 
 
 def is_tracker(url: str) -> bool:
@@ -227,6 +357,7 @@ def is_tracker(url: str) -> bool:
     host = host_of(url)
     return bool(re.search(r"(^|\.)totaljobsmail\.com$", host)
                 or re.search(r"(^|\.)ct\.sendgrid\.net$", host)
+                or is_click_track(url)
                 or (host == "cts.indeed.com" and url.split("?")[0].find("/v3/") > 0))
 
 
@@ -247,6 +378,24 @@ def unwrap_indeed_cts(url: str) -> str:
     except (ValueError, OSError, json.JSONDecodeError):
         return url
     return destination or url
+
+
+def unwrap_click_track(url: str) -> str:
+    """The destination inside a 24recruitmentmail.com wrapper, read without asking the mailer.
+
+    Every link in these mails is `/sj-<feed>/email_click_track.php?...&page=<base64url of the
+    destination>`, jobs and footer alike — the whole redirect is already in the link. Decoding
+    it locally means a scan never registers a click on the recipient's behalf, and never turns
+    a read of the mailbox into traffic to a board.
+    """
+    blob = (parse_qs(urlsplit(url).query).get("page") or [""])[0]
+    if not blob:
+        return url
+    try:
+        destination = base64.urlsafe_b64decode(blob + "=" * (-len(blob) % 4)).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return url
+    return destination if destination.startswith(("http://", "https://")) else url
 
 
 def unwrap_magic_link(url: str) -> str:
@@ -271,6 +420,24 @@ def unwrap_magic_link(url: str) -> str:
     haystack = haystack_job_uuid(url)
     if haystack:
         return f"https://haystack.cv/jobs/{haystack}"
+
+    # talent.com/redirect?...&id=<n>&bpid=<per-recipient>&initiator=... — the id is the advert
+    # and the rest is this recipient's click. Reduced to the shape the talent *board* writes,
+    # /view?id=<n>, so one pasted URL is recognised as both boards' row downstream.
+    if re.search(r"(^|\.)talent\.com$", host) and re.match(r"^/(redirect|view)$", parts.path):
+        ident = (parse_qs(parts.query).get("id") or [""])[0]
+        return f"https://{parts.netloc}/view?id={ident}" if ident.isdigit() else url
+
+    # joblookup.com/uk/dispatch/job/publisher/<slug>?ptkn=<the recipient's email address>
+    # &ptms=<signed blob>&utm_* — none of the query is the advert, and ptkn is personal data
+    # that must not reach a report.
+    if re.search(r"(^|\.)joblookup\.com$", host) and JOBLOOKUP_JOB_PATH.search(parts.path):
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+    # thebigjobsite.com/redirectjob?id=<hex>&key=<per-recipient>&utm_*
+    if re.search(r"(^|\.)thebigjobsite\.com$", host) and parts.path == "/redirectjob":
+        ident = (parse_qs(parts.query).get("id") or [""])[0]
+        return f"https://www.thebigjobsite.com/redirectjob?id={ident}" if ident else url
 
     if re.search(r"(^|\.)linkedin\.com$", host):
         job = re.match(r"^/(?:comm/)?jobs/view/(\d+)", parts.path)
@@ -325,6 +492,12 @@ def resolve_redirect(url: str) -> str:
             break
         if host_of(current) == "cts.indeed.com":
             unwrapped = unwrap_indeed_cts(current)
+            if unwrapped == current:
+                break
+            current = unwrapped
+            continue
+        if is_click_track(current):
+            unwrapped = unwrap_click_track(current)
             if unwrapped == current:
                 break
             current = unwrapped
@@ -384,7 +557,15 @@ def job_id_for(provider: str, url: str, title: str = "", company: str = "") -> s
         "totaljobs": r"/job/(\d+)",
         "jobright": r"/jobs/info/([\w-]+)",
         "welcometothejungle": r"/jobs/([\w-]+)",
+        # joblookup states no id of its own; the slug is what the site itself keys the advert on.
+        "joblookup": r"/dispatch/job/publisher/([\w-]+)$",
     }
+    if provider in ("talent", "thebigjobsite"):
+        # `talent-<id>` is the talent *board's* own id for the same advert, minus the prefix, so
+        # a job actioned from one of these mails reads as actioned on the board too.
+        ident = (parse_qs(parts.query).get("id") or [""])[0]
+        if ident:
+            return f"{provider}-{ident}"
     if provider == "haystack":
         # Both link shapes name the advert, and the uuid is the search board's own id for it,
         # so a job actioned from a mail is recognised on the Haystack board too.
@@ -407,8 +588,12 @@ def provider_from_url(url: str) -> str:
 
     The same rules that decide whether to keep a link out of a mail decide, later, whether a
     line in the downstream pipeline refers to a lead this board produced.
+
+    A re-mailer is never the answer: it accepts every destination its boards accept, so letting
+    it answer would file a talent.com advert under "job24" and hide it from the talent board.
     """
-    return next((name for name in PROVIDERS if allows_url(name, url)), "")
+    return next((name for name in PROVIDERS
+                 if name not in REMAILERS and allows_url(name, url)), "")
 
 
 def job_id_from_url(url: str) -> str:
@@ -550,6 +735,30 @@ def welcometothejungle_alert(before, after, prefix) -> dict:
             "location": place}
 
 
+def joblookup_digest(before, after, prefix) -> dict:
+    # Title / <url> / "NEW" / "Company, TOWN, COUNTY" / "more details" / <url> / "Apply" / <url>.
+    # All three links are the same advert, so only the first attribution is kept.
+    company, _, place = at(after, 0).partition(",")
+    return {"title": at(before, -1), "company": company.strip(), "location": place.strip()}
+
+
+def talent_digest(before, after, prefix) -> dict:
+    # "Good Match" / Title / <url> / "Location, England, gb" / summary / "more details" / <url>.
+    # These mails name no employer at all — the board's own scan is what states the company,
+    # and inventing one here would poison dedup downstream.
+    return {"title": at(before, -1), "company": "", "location": at(after, 0)}
+
+
+def thebigjobsite_digest(before, after, prefix) -> dict:
+    # Title / <url> / "Posted by" / Company / salary / contract / Location / "View job" / <url>.
+    posted_at = next((i for i, line in enumerate(after) if re.fullmatch(r"posted by", line, re.I)), -1)
+    if posted_at < 0:
+        return {}
+    return {"title": at(before, -1),
+            "company": at(after, posted_at + 1),
+            "location": at(after, -1)}
+
+
 # One template = one body layout, identified by a signature and read by an adaptor. Providers
 # ship several and change them without notice, so this matches on what the body says, not on
 # which label the mail arrived under. First matching signature wins; order matters only where
@@ -584,6 +793,17 @@ TEMPLATES = [
     {"id": "jobright-alert", "provider": "jobright",
      "signature": re.compile(r"Jobright Instant Alert|curated to align with your preferences", re.I),
      "adaptor": jobright_alert},
+    # One sender, three layouts, one per board it re-mails. The signatures are the mailer's own
+    # headings; the `a=<feed>` in every link agrees with them but is not relied on, because a
+    # layout change is what breaks an adaptor and the heading is what a layout change moves.
+    {"id": "job24-joblookup", "provider": "job24",
+     "signature": re.compile(r"you have some new matching jobs", re.I),
+     "adaptor": joblookup_digest},
+    {"id": "job24-talent", "provider": "job24",
+     "signature": re.compile(r"Recommended Jobs for You", re.I), "adaptor": talent_digest},
+    {"id": "job24-thebigjobsite", "provider": "job24",
+     "signature": re.compile(r"Busy\? Not getting exactly matching jobs", re.I),
+     "adaptor": thebigjobsite_digest},
 ]
 
 
@@ -717,8 +937,13 @@ def leads_from_message(meta: dict, envelope: dict, body: str, max_urls: int) -> 
     leads = []
     for _, url in found:
         job = per_job.get(url, {})
+        # The sender said which mail this is; the link says which board the posting is on. They
+        # differ only for a re-mailer, whose one mail carries several boards' adverts — and
+        # there the destination has to win, or the id would not be the board's own.
+        lead_provider = provider_from_url(url) or provider
+        lead_board = (PROVIDERS.get(lead_provider) or {}).get("board", board)
         role_title = job.get("title") or (subject_title if single else "Job lead (email)")
-        company_name = job.get("company") or subject_company or board
+        company_name = job.get("company") or subject_company or lead_board
         leads.append(Lead(
             source="email",
             search_title=meta["label"],
@@ -730,7 +955,7 @@ def leads_from_message(meta: dict, envelope: dict, body: str, max_urls: int) -> 
             contract="",
             posted=posted,
             url=url,
-            job_id=job_id_for(provider, url, role_title, company_name),
+            job_id=job_id_for(lead_provider, url, role_title, company_name),
             raw_block=context,
         ))
     return leads, (template["id"] if template else "")
@@ -792,7 +1017,8 @@ def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False,
             captured, produced = [], 0
             for envelope in envelopes:
                 try:
-                    body = read_message(meta["label"], envelope.get("id"))
+                    body = read_message(meta["label"], envelope.get("id"),
+                                        was_seen="Seen" in (envelope.get("flags") or []))
                 except MailError as failure:
                     print(f"  message {envelope.get('id')}: {failure}")
                     continue
