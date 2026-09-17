@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { useWindowVirtualizer } from "@tanstack/react-virtual"
 import { Link, useSearchParams } from "react-router-dom"
 import { Download } from "lucide-react"
 
@@ -59,6 +60,25 @@ export default function JobsPage() {
     queryFn: () => get<JobList>(`/jobs?${search}`),
     placeholderData: keepPreviousData,
   })
+
+  // A report is every job a board showed, so this list runs to thousands of rows: rendering them
+  // all is seconds of layout for the twenty you can see. The window is the scroller — the page
+  // scrolls as it always did, and only the visible rows exist, held in place by two spacer rows.
+  const jobs = data?.jobs ?? []
+  const body = useRef<HTMLTableSectionElement>(null)
+  const [top, setTop] = useState(0)
+  useLayoutEffect(() => {
+    if (body.current) setTop(body.current.getBoundingClientRect().top + window.scrollY)
+  }, [jobs.length, data?.has_pipeline])
+  const rows = useWindowVirtualizer({
+    count: jobs.length,
+    estimateSize: () => 41,
+    overscan: 12,
+    scrollMargin: top,
+  })
+  const visible = rows.getVirtualItems()
+  const padTop = visible.length ? visible[0].start - top : 0
+  const padBottom = visible.length ? rows.getTotalSize() - (visible[visible.length - 1].end - top) : 0
 
   const set = (key: string, value: string) =>
     setParams((previous) => {
@@ -214,10 +234,15 @@ export default function JobsPage() {
                 {data.has_pipeline ? <TableHead>Pipeline</TableHead> : null}
               </TableRow>
             </TableHeader>
-            <TableBody>
-              {data.jobs.map((job) => (
+            <TableBody ref={body}>
+              {padTop > 0 ? <tr style={{ height: padTop }} /> : null}
+              {visible.map(({ index }) => {
+                const job = jobs[index]
+                return (
                 <TableRow
                   key={`${job.board}/${job.job_id}`}
+                  data-index={index}
+                  ref={rows.measureElement}
                   /* A job portals.yml would drop on ingest: shown, but visibly not going anywhere. */
                   className={cn(job.ingest_skip && "bg-destructive/5")}
                 >
@@ -272,8 +297,10 @@ export default function JobsPage() {
                     </TableCell>
                   ) : null}
                 </TableRow>
-              ))}
-              {data.jobs.length === 0 ? (
+                )
+              })}
+              {padBottom > 0 ? <tr style={{ height: padBottom }} /> : null}
+              {jobs.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8}>
                     <Empty>Nothing matches these filters.</Empty>
