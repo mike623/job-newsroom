@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import random
 import re
@@ -72,18 +73,58 @@ def set_board_enabled(board: str, enabled: bool, path: str | Path = ROOT / "conf
     else:
         lines.insert(start + 1, f"    enabled: {value}\n")
 
-    updated = "".join(lines)
     expected = {**before, "boards": {**before["boards"],
                                      board: {**(before["boards"][board] or {}), "enabled": enabled}}}
-    if (yaml.safe_load(updated) or {}) != expected:
-        raise ValueError(f"editing {board} would have changed more of {path.name} than its enabled flag")
+    _keep("".join(lines), expected, path, f"the {board} board's enabled flag")
+    return True
 
-    # Written beside the original and moved into place, so an interrupted write cannot leave the
-    # project's only input half-finished.
+
+def set_career_ops_workspace(location: str, path: str | Path = ROOT / "config.yml") -> bool:
+    """Point config.yml at the downstream workspace, leaving the rest of the file alone.
+
+    Same care as `set_board_enabled`, and for the same reason: this file is hand-commented and
+    is the project's only input, so one line is edited and the result is parsed and compared
+    before it replaces it. Returns True when the file was changed.
+    """
+    path = Path(path)
+    text = path.read_text(encoding="utf-8")
+    before = yaml.safe_load(text) or {}
+    if ((before.get("career_ops") or {}).get("workspace") or "") == location:
+        return False
+
+    # A path with a space or a `#` in it is not a bare YAML scalar; JSON's quoting is YAML's.
+    value = location if re.fullmatch(r"[A-Za-z0-9_./-]+", location) else json.dumps(location)
+    lines = text.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if re.match(r"^career_ops:\s*(#.*)?$", line)), None)
+    if start is None:
+        lines.append(f"\ncareer_ops:\n  workspace: {value}\n")
+    else:
+        end = next((i for i in range(start + 1, len(lines)) if re.match(r"^\S", lines[i])), len(lines))
+        for i in range(start + 1, end):
+            found = re.match(r"^(  workspace:\s*)\S.*?(\s*(?:#.*)?)$", lines[i].rstrip("\n"))
+            if found:
+                lines[i] = f"{found.group(1)}{value}{found.group(2)}\n"
+                break
+        else:
+            lines.insert(start + 1, f"  workspace: {value}\n")
+
+    expected = {**before, "career_ops": {**(before.get("career_ops") or {}), "workspace": location}}
+    _keep("".join(lines), expected, path, "the downstream workspace")
+    return True
+
+
+def _keep(updated: str, expected: dict, path: Path, what: str) -> None:
+    """Replace config.yml with `updated`, but only if it parses to exactly `expected`.
+
+    An edit that changed anything but the one value is a corrupted config file. The new text is
+    written beside the original and moved into place, so an interrupted write cannot leave the
+    project's only input half-finished.
+    """
+    if (yaml.safe_load(updated) or {}) != expected:
+        raise ValueError(f"editing {what} would have changed more of {path.name} than that")
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(updated, encoding="utf-8")
     os.replace(temporary, path)
-    return True
 
 
 def run_stamp() -> str:

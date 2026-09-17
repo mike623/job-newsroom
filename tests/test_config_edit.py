@@ -115,3 +115,16 @@ def test_a_failed_edit_leaves_the_original_untouched(tmp_path, monkeypatch):
 
     assert path.read_text(encoding="utf-8") == before
     assert not (tmp_path / "config.yml.tmp").exists()
+
+
+def test_the_workspace_path_is_written_and_the_rest_of_the_file_survives(config):
+    assert board_config.set_career_ops_workspace("/tmp/career ops", config) is True
+
+    text = config.read_text(encoding="utf-8")
+    assert yaml.safe_load(text)["career_ops"]["workspace"] == "/tmp/career ops"
+    assert "# Slow mode: fewer pages per run." in text
+    assert yaml.safe_load(text)["crawl"]["delay_seconds"] == 15
+    # A second write replaces the line rather than adding another block.
+    assert board_config.set_career_ops_workspace("/tmp/elsewhere", config) is True
+    assert board_config.set_career_ops_workspace("/tmp/elsewhere", config) is False
+    assert config.read_text(encoding="utf-8").count("career_ops:") == 1

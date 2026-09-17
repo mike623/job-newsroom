@@ -11,6 +11,7 @@ same status, so the client can tell "busy" from "broken".
 from __future__ import annotations
 
 import asyncio
+import os
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -232,16 +233,39 @@ async def run_due_now():
 @router.get("/ingest")
 def ingest_page(board: str = "", q: str = ""):
     workspace = ingest_view.workspace()
+    # Two paths, because career-ops' data can live outside its checkout: what is configured
+    # here is what the box edits, and `workspace` is where that lands and what is appended to.
+    # The box is read-only when the environment names the path, an edit to config.yml then
+    # being silently ignored.
+    shared = {"configured": str(ingest_view.configured()),
+              "workspace_fixed": bool(os.environ.get("CAREER_OPS_WORKSPACE"))}
     if workspace is None:
-        return {"workspace": "", "previews": [], "rows": [], "total": 0, "boards": []}
+        return {"workspace": "", **shared, "previews": [], "rows": [], "total": 0, "boards": []}
     previews = ingest_view.previews(list(scans.COMMANDS), workspace)
     return {
         "workspace": str(workspace),
+        **shared,
         "previews": [serialise.preview(p) for p in previews],
         "rows": [serialise.candidate(row) for row in ingest_view.candidates(previews, board, q)],
         "total": sum(p.count for p in previews),
         "boards": [p.board for p in previews if p.count],
     }
+
+
+@router.post("/ingest-workspace")
+async def set_workspace(request: Request):
+    """Point config.yml at the downstream workspace."""
+    form = schedule_view.Submitted.parse(await request.body())
+    given = form.get("workspace") or ""
+    try:
+        return {"workspace": str(ingest_view.set_workspace(given)),
+                "configured": str(ingest_view.configured())}
+    except PermissionError as overridden:
+        raise HTTPException(status_code=409, detail=str(overridden))
+    except ValueError as refused:
+        raise HTTPException(status_code=400, detail=str(refused))
+    except OSError as failure:
+        raise HTTPException(status_code=500, detail=str(failure))
 
 
 @router.post("/ingest/{board}")

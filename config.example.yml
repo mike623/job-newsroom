@@ -195,8 +195,12 @@ crawl:
   headless: true
 
 career_ops:
-  # Downstream workspace. The dashboard reads it to tell actioned jobs from the rest, and
-  # reed_crawler/ingest_jobspy.py appends pipeline entries to it by hand.
+  # The career-ops directory. The dashboard reads it to tell actioned jobs from the rest, and
+  # reed_crawler/ingest_jobspy.py appends pipeline entries to it by hand. Editable from the
+  # dashboard's /ingest page.
+  # Either its checkout or its data directory: career-ops keeps the two apart when a
+  # `.career-ops-data` file in the checkout names where the data went, and that is followed
+  # here the way career-ops follows it, along with its CAREER_OPS_ROOT / CAREER_OPS_DATA_DIR.
   # Overridable at runtime with the CAREER_OPS_WORKSPACE env var.
   workspace: ../career-ops
 

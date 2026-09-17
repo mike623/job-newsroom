@@ -524,6 +524,18 @@ unaffected — the container still starts.
 with `CAREER_OPS_WORKSPACE=/workspace/career-ops` naming it inside. Set `CAREER_OPS_DIR` if your
 checkout is not a sibling of this one.
 
+Mount the directory that actually holds `portals.yml` and `data/`. career-ops can keep its code
+and its data apart — a `.career-ops-data` file in the checkout naming where the data went — and
+running natively that marker is followed. A bind mount cannot follow it, because the path in that
+file is a path on the host. So where the two are split, mount the data directory:
+
+```bash
+CAREER_OPS_DIR=~/Documents/career-ops-data docker compose up -d
+```
+
+Because the environment names the path in Docker, it is the environment that wins over
+`config.yml` — the `/ingest` page's path box is read-only there, and says why.
+
 It is mounted on the **dashboard and not the runner**, which makes the rule that no schedule may
 write downstream a physical fact rather than a convention: the container that scans cannot reach
 `pipeline.md` at all, however a run is triggered.

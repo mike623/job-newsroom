@@ -158,7 +158,12 @@ export interface Candidate {
 }
 
 export interface Ingest {
+  /** Where the data actually is: the career-ops directory holding portals.yml and data/. */
   workspace: string
+  /** The career-ops path as configured, which may be a checkout pointing its data elsewhere. */
+  configured: string
+  /** The environment names the workspace, so the path cannot be edited from the page. */
+  workspace_fixed: boolean
   previews: Preview[]
   rows: Candidate[]
   total: number

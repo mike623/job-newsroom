@@ -57,8 +57,12 @@ PENDING_HEADING = re.compile(r"^##[ \t]+(Pending|Pendientes)[ \t]*$", re.M | re.
 URL_IN_LINE = re.compile(r"(https?://\S+)")
 
 
-def workspace(override: str = "") -> Path:
-    """Where the downstream workspace lives. Resolution matches the dashboard's."""
+def checkout(override: str = "") -> Path:
+    """The career-ops directory as configured here, whether or not it holds the data.
+
+    The environment wins, then config.yml, then a sibling directory. Nothing is checked: this
+    is what was asked for, `workspace` below is where that lands.
+    """
     configured = ""
     config_path = ROOT / "config.yml"
     if config_path.exists():
@@ -68,11 +72,40 @@ def workspace(override: str = "") -> Path:
         except (OSError, yaml.YAMLError):
             configured = ""
     candidate = override or os.environ.get("CAREER_OPS_WORKSPACE") or configured or (ROOT.parent / "career-ops")
-    path = Path(candidate)
-    if not path.is_absolute():
-        path = (ROOT / path).resolve()
+    path = Path(candidate).expanduser()
+    return path if path.is_absolute() else (ROOT / path).resolve()
+
+
+def data_root(base: Path) -> Path:
+    """career-ops' own answer to where its user data lives, given its checkout.
+
+    career-ops separates the code from the data it is about — cv.md, portals.yml and data/ can
+    sit outside the repository — and states the precedence: the CAREER_OPS_ROOT or
+    CAREER_OPS_DATA_DIR environment variables, then a `.career-ops-data` marker file in the
+    checkout naming the directory, then the checkout itself. Its own tooling resolves this on
+    every run, so this project asks the same question rather than being pointed at the answer:
+    a checkout configured here keeps working when its marker file is repointed.
+    """
+    external = os.environ.get("CAREER_OPS_ROOT") or os.environ.get("CAREER_OPS_DATA_DIR") or ""
+    marker = base / ".career-ops-data"
+    if not external and marker.is_file():
+        try:
+            external = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            external = ""
+    if not external:
+        return base
+    found = Path(external).expanduser()
+    return found if found.is_absolute() else (base / found).resolve()
+
+
+def workspace(override: str = "") -> Path:
+    """Where the downstream data lives — the directory holding portals.yml and data/."""
+    base = checkout(override)
+    path = data_root(base)
     if not (path / "data" / "pipeline.md").exists():
-        raise SystemExit(f"No career-ops workspace at {path} (expected data/pipeline.md there).")
+        via = f" (from {base}, via .career-ops-data)" if path != base else ""
+        raise SystemExit(f"No career-ops data at {path}{via} (expected data/pipeline.md there).")
     return path
 
 

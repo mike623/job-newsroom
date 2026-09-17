@@ -9,7 +9,6 @@ is only ever a lookup.
 """
 from __future__ import annotations
 
-import os
 import re
 import sys
 from dataclasses import dataclass
@@ -80,25 +79,15 @@ ABSENT = Status()
 
 
 def workspace() -> Path | None:
-    """Where the downstream workspace lives, or None if it is not there.
+    """Where the downstream data lives, or None if it is not there.
 
-    Resolution matches the crawler's: the environment wins, then config, then a sibling
-    directory.
+    Asked of `ingest_jobspy`, which is also what does the appending: two copies of the
+    resolution meant the page could read one directory while the ingest wrote to another.
     """
-    configured = ""
-    config_path = ROOT / "config.yml"
-    if config_path.exists():
-        try:
-            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            configured = (config.get("career_ops") or {}).get("workspace") or ""
-        except (OSError, yaml.YAMLError):
-            configured = ""
-
-    candidate = os.environ.get("CAREER_OPS_WORKSPACE") or configured or (ROOT.parent / "career-ops")
-    path = Path(candidate)
-    if not path.is_absolute():
-        path = (ROOT / path).resolve()
-    return path if (path / "data" / "pipeline.md").exists() else None
+    try:
+        return ingest_jobspy.workspace()
+    except SystemExit:
+        return None
 
 
 def load(root: Path | None = None) -> dict[tuple[str, str], Status]:

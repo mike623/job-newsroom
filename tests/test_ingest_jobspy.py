@@ -210,3 +210,32 @@ def test_a_bracketed_stack_between_seniority_and_role_still_matches(tmp_path):
     assert filters.title_passes("Senior Software Engineer")
     # The aside is where the stack negatives live, so they are matched before it is dropped.
     assert not filters.title_passes("Senior (Java/Spring) Engineer")
+
+
+def test_a_checkout_naming_its_data_elsewhere_is_followed(base, tmp_path, monkeypatch):
+    """career-ops keeps code and data apart; `.career-ops-data` in the checkout says where."""
+    monkeypatch.delenv("CAREER_OPS_ROOT", raising=False)
+    monkeypatch.delenv("CAREER_OPS_DATA_DIR", raising=False)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / ".career-ops-data").write_text(f"{base}\n", encoding="utf-8")
+
+    assert ingest_jobspy.workspace(str(checkout)) == base
+    # The environment wins over the marker, as career-ops' own resolution does.
+    monkeypatch.setenv("CAREER_OPS_ROOT", str(base))
+    assert ingest_jobspy.workspace(str(tmp_path / "nowhere")) == base
+    # A checkout that is its own data directory resolves to itself.
+    monkeypatch.delenv("CAREER_OPS_ROOT")
+    assert ingest_jobspy.workspace(str(base)) == base
+
+
+def test_a_path_holding_no_pipeline_names_where_it_looked(base, tmp_path, monkeypatch):
+    monkeypatch.delenv("CAREER_OPS_ROOT", raising=False)
+    monkeypatch.delenv("CAREER_OPS_DATA_DIR", raising=False)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / ".career-ops-data").write_text(str(tmp_path / "gone"), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as refused:
+        ingest_jobspy.workspace(str(checkout))
+    assert str(tmp_path / "gone") in str(refused.value) and ".career-ops-data" in str(refused.value)

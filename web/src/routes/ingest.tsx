@@ -33,6 +33,87 @@ interface Sent {
   added: number
 }
 
+/**
+ * Where career-ops is, and where its data turned out to be.
+ *
+ * Either directory can be named: career-ops keeps its code and its data apart when a
+ * `.career-ops-data` file says so, and that marker is followed on every read. The path is
+ * checked before it is saved, so a saved one is a path the ingest can actually append to.
+ */
+function Workspace({
+  configured,
+  resolved,
+  fixed,
+}: {
+  configured: string
+  resolved: string
+  fixed: boolean
+}) {
+  const queries = useQueryClient()
+  const [path, setPath] = useState(configured)
+
+  const save = useMutation({
+    mutationFn: () =>
+      post<{ workspace: string; configured: string }>("/ingest-workspace", { workspace: path }),
+    onSuccess: ({ workspace, configured: saved }) => {
+      setPath(saved)
+      toast.success(`Ingesting into ${workspace}`)
+      // The job list's Pipeline column reads the same directory, so everything is stale now.
+      queries.invalidateQueries()
+    },
+    onError: (failure: ApiError) => toast.error(failure.message),
+  })
+
+  return (
+    <div className="mb-6 space-y-1.5">
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="text-sm text-muted-foreground" htmlFor="workspace">
+          career-ops directory
+        </label>
+        <Input
+          id="workspace"
+          className="w-[26rem] font-mono text-xs"
+          value={path}
+          disabled={fixed}
+          placeholder="/path/to/career-ops"
+          onChange={(event) => setPath(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && path && path !== configured) save.mutate()
+          }}
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={fixed || save.isPending || !path || path === configured}
+          onClick={() => save.mutate()}
+        >
+          {save.isPending ? <Loader2 className="size-3.5 animate-spin" /> : null}
+          Save
+        </Button>
+        {fixed ? (
+          <span className="text-xs text-muted-foreground">
+            Set by <code>CAREER_OPS_WORKSPACE</code>; unset it to edit here.
+          </span>
+        ) : null}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {resolved && resolved !== configured ? (
+          <>
+            Data read and written at <code>{resolved}</code>, named by that checkout’s{" "}
+            <code>.career-ops-data</code>.
+          </>
+        ) : (
+          <>
+            The directory holding <code>portals.yml</code> and <code>data/pipeline.md</code> — a
+            career-ops checkout, or the external data directory its{" "}
+            <code>.career-ops-data</code> points at.
+          </>
+        )}
+      </p>
+    </div>
+  )
+}
+
 export default function IngestPage() {
   const queries = useQueryClient()
   const [params, setParams] = useSearchParams()
@@ -98,10 +179,11 @@ export default function IngestPage() {
     return (
       <>
         <PageTitle>Ingest</PageTitle>
-        <p className="text-sm text-muted-foreground">
-          No downstream workspace is configured, so there is nothing to ingest into. Set{" "}
-          <code>career_ops.workspace</code> in <code>config.yml</code>.
+        <p className="mb-4 text-sm text-muted-foreground">
+          No downstream workspace is configured, so there is nothing to ingest into. Name the
+          career-ops checkout below — the directory holding <code>data/pipeline.md</code>.
         </p>
+        <Workspace configured={data.configured} resolved="" fixed={data.workspace_fixed} />
       </>
     )
   }
@@ -123,6 +205,12 @@ export default function IngestPage() {
       >
         Ingest
       </PageTitle>
+
+      <Workspace
+        configured={data.configured}
+        resolved={data.workspace}
+        fixed={data.workspace_fixed}
+      />
 
       <SectionTitle>Send leads downstream</SectionTitle>
       <div className="overflow-x-auto rounded-lg border">

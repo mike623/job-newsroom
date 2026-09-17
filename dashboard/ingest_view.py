@@ -8,6 +8,7 @@ second implementation of the filtering.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -16,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "reed_crawler"))
 
+import board_config
 import ingest_jobspy
 
 LOG_DIR = ROOT / "outputs" / "state" / "logs"
@@ -59,6 +61,42 @@ def workspace() -> Path | None:
         return ingest_jobspy.workspace()
     except SystemExit:
         return None                  # no workspace configured; the page hides itself
+
+
+def configured() -> Path:
+    """The career-ops directory as config.yml names it, resolved but not followed."""
+    return ingest_jobspy.checkout()
+
+
+def set_workspace(location: str) -> Path:
+    """Point config.yml at career-ops, and answer with the data directory that resolves to.
+
+    Either directory may be given: career-ops' code and its data can live apart, and a checkout
+    naming its data elsewhere in `.career-ops-data` is followed the way career-ops' own tooling
+    follows it. What is stored is the path as given — following the marker at read time is what
+    keeps this correct when the marker is later repointed — and it is stored absolute, because
+    no resolver here expands `~`.
+
+    Checked before it is written: a path resolving to no `data/pipeline.md` is not career-ops,
+    and storing one would leave the page saying nothing is configured without saying why.
+    """
+    if os.environ.get("CAREER_OPS_WORKSPACE"):
+        raise PermissionError("CAREER_OPS_WORKSPACE is set in the environment and wins over "
+                              "config.yml; unset it to edit the path here")
+    location = (location or "").strip()
+    if not location:
+        raise ValueError("no path given")
+
+    given = Path(location).expanduser()
+    if not given.is_absolute():
+        given = (ROOT / given).resolve()
+    try:
+        resolved = ingest_jobspy.workspace(str(given))
+    except SystemExit as missing:
+        raise ValueError(str(missing))
+
+    board_config.set_career_ops_workspace(str(given))
+    return resolved
 
 
 def preview(board: str, base: Path) -> Preview:
