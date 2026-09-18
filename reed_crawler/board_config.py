@@ -27,6 +27,13 @@ BASE_ADZUNA = "https://api.adzuna.com/v1/api/jobs/gb/search"
 # auth, no JavaScript, no browser: linkedin_pipeline fetches this the way adzuna_pipeline
 # fetches its API. The endpoint pages ten cards at a time via `start`.
 BASE_LINKEDIN = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+# The Career Wallet renders its search server-side: a plain GET returns the whole result page
+# as HTML, so careerwallet_pipeline fetches it the way linkedin_pipeline fetches its fragment.
+# Its own alert mail is not a route in — every link there is a /stats/jbe/ tracker holding a
+# Laravel-encrypted blob, so the same advert arrives under a new URL in every send, and
+# robots.txt disallows resolving it. The search is the only place its postings state a stable
+# identity: /job/<slug>-<numeric id>.
+BASE_CAREERWALLET = "https://thecareerwallet.com"
 
 
 def slug_text(s: str) -> str:
@@ -232,6 +239,19 @@ def haystack_search_url(title: str, location: str) -> str:
     return f"{BASE_HAYSTACK}/jobs?q={quote_plus(title)}&location={quote_plus(location)}"
 
 
+def careerwallet_search_url(title: str, location: str, radius: int, page: int = 1) -> str:
+    """One page of a Career Wallet search.
+
+    The form's own field names, which are what the site actually filters on: `search` and
+    `location` — a `q=` is accepted and ignored, returning the same rows for every query.
+    `Radius` is capitalised in the markup and is not interchangeable with a lowercase one.
+    """
+    query = {"search": title, "location": location, "Radius": radius}
+    if page > 1:
+        query["page"] = page
+    return f"{BASE_CAREERWALLET}/jobs?{urlencode(query)}"
+
+
 def build_board_urls(cfg: dict, board: str) -> list[dict]:
     board_cfg = cfg["boards"][board]
     if not board_cfg.get("enabled", False):
@@ -274,6 +294,8 @@ def build_board_urls(cfg: dict, board: str) -> list[dict]:
             url = talent_search_url(title, location)
         elif board == "haystack":
             url = haystack_search_url(title, location)
+        elif board == "careerwallet":
+            url = careerwallet_search_url(title, location, int(board_cfg.get("radius", 40)))
         elif board == "linkedin":
             url = linkedin_search_url(title, location, int(board_cfg.get("distance", 30)),
                                       int(board_cfg.get("max_age_days", 0)))

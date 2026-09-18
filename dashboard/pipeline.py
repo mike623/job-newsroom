@@ -43,6 +43,9 @@ _IDENTIFIERS = [
     # this line answers for the "linkedin" board, email_pipeline.job_id_from_url below for
     # the "email" one.
     ("linkedin", re.compile(r"linkedin\.com/jobs/view/(\d+)")),
+    # /job/<slug>-<id>: the slug is free text and the id is its last hyphenated part, so the
+    # digits are anchored to the end of the path rather than searched for anywhere in it.
+    ("careerwallet", re.compile(r"thecareerwallet\.com/job/[\w-]*?(\d+)(?:[?#]|$)")),
 ]
 _LOCAL_IMPORT = re.compile(r"local:jds/([a-z]+)-([^-\s]+)-")
 _URL = re.compile(r"https?://[^\s|]+")

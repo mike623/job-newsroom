@@ -193,12 +193,13 @@ python reed_crawler/board_config.py
 | **Haystack** | HTML | A client-rendered SPA; fields are anchored on their icons — see below |
 | **Adzuna** | JSON API | Not crawled at all: the site 403s every bot. Needs free API credentials |
 | **LinkedIn** | Guest endpoint | Not crawled at all: an unauthenticated HTML fragment — see below |
+| **The Career Wallet** | HTML | A plain server-rendered results page; its own alert mail is unusable — see below |
 | **Email** | Gmail labels | Not crawled at all: reads the alert mail the sources already send |
 | **DevITjobs UK** | XML feed | The whole UK board as one gzipped feed — see below |
 | **RemoteOK** | JSON feed | One array of the latest remote postings; element 0 is a legal notice |
 | **The Muse** | JSON API | 411,049 postings, so a category is required before it will scan |
 
-Seven of the eleven are not crawls, and that is the interesting part.
+Seven of the twelve are not crawls, and that is the interesting part.
 
 ### Aggregator feeds are one module
 
@@ -288,6 +289,31 @@ UK cards state no salary, so that column stays empty here. The same posting ofte
 once from this source, once as a LinkedIn alert mail — and both are kept, because they are two
 genuine sightings of one advert.
 
+### The Career Wallet is crawled because its mail cannot be
+
+thecareerwallet.com renders its search server-side, so one GET returns the whole results page — no
+browser, no JavaScript, no API. Reading it is LinkedIn's shape over an ordinary page.
+
+```yaml
+boards:
+  careerwallet:
+    enabled: true
+    radius: 40             # miles; the form's own "Radius" field
+    pages_per_search: 3    # about ten cards a page
+```
+
+The source mails a daily digest too, and it is deliberately **not** one of the email labels. Every
+job link in that mail is `/stats/jbe/<blob>`, a Laravel-encrypted envelope with a fresh IV on every
+send: the same advert arrives under a different URL each morning, nothing here can decrypt it, and
+`robots.txt` disallows resolving it. The mail states no plain link anywhere. The search page does —
+`/job/<slug>-<id>` — which is the whole reason this source is crawled.
+
+Two details follow from the markup. The card's title and its apply button both point at that same
+tracker, so the advert's URL is taken from the card's "Read more" link instead; and pay is not a
+field here, appearing only inside the description snippet when an advert happens to quote it. The
+site also republishes one advert under several search-engine-friendly slugs, each with its own id,
+which dedup collapses by title and company.
+
 ### Email reads your mailbox
 
 The sources already email their alerts, so this one reads them rather than asking for the same jobs
@@ -365,6 +391,7 @@ python reed_crawler/talent_pipeline.py scan --config config.yml --limit 1
 python reed_crawler/haystack_pipeline.py scan --config config.yml [--limit N]
 python reed_crawler/indeed_pipeline.py scan --config config.yml [--allow-disabled]
 python reed_crawler/adzuna_pipeline.py scan --config config.yml [--allow-disabled]
+python reed_crawler/careerwallet_pipeline.py scan --config config.yml [--limit N]
 python reed_crawler/email_pipeline.py scan --config config.yml [--allow-disabled] [--mark-read]
 ```
 

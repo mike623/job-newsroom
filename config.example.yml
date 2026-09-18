@@ -122,6 +122,22 @@ boards:
     pages_per_search: 1    # ten cards a page; the only cap on this board's request count
     delay_seconds: 60
 
+  careerwallet:
+    # thecareerwallet.com renders its search server-side, so a plain GET returns the whole
+    # results page — no browser, no API. Its daily alert mail is deliberately not read: every
+    # link there is a /stats/jbe/ tracker holding a Laravel-encrypted blob with a fresh IV per
+    # send, so the same advert would arrive under a new URL every morning and never dedupe,
+    # and robots.txt disallows resolving one. The search is where a posting states its id.
+    enabled: false
+    title_groups:
+      - primary
+      - secondary
+    location_groups:
+      - core
+    radius: 40             # miles from the location; the form's own "Radius" field
+    pages_per_search: 3    # ~ten cards a page; the only cap on this board's request count
+    delay_seconds: 60
+
   talent:
     # Very low-volume Talent.com search-card discovery.
     # Talent.com can return an unhydrated shell for /jobs?k=...&l=...; supplying a
