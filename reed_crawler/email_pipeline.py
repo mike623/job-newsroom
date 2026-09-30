@@ -12,7 +12,7 @@ the run record and the cron treat email exactly like Reed.
 Three independent axes — never conflate them:
   label    -> which mailbox to read (a filing choice, says nothing about format)
   provider -> URL rules and board name, identified by the SENDER (see PROVIDERS)
-  template -> body layout, identified by a body SIGNATURE (see TEMPLATES)
+  template -> body layout, identified by a body SIGNATURE (see email_adaptors/)
 Providers ship several templates and change them without notice. Mail whose template is
 unrecognised is named at the end of a run rather than silently yielding subject-derived rows.
 
@@ -45,6 +45,7 @@ from board_config import load_config, raw_capture_stem
 from lead import Lead, slug
 import scan_health
 import scan_run
+from email_adaptors import TEMPLATES
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "outputs" / "email"
@@ -65,6 +66,7 @@ DEFAULT_LABELS = [
     {"label": "job/discovery/haystack", "provider": "haystack"},
     {"label": "job/discovery/welcometothejungle", "provider": "welcometothejungle"},
     {"label": "job/discovery/job24", "provider": "job24"},
+    {"label": "job/discovery/talent", "provider": "talent"},
 ]
 
 PROVIDERS = {
@@ -77,11 +79,13 @@ PROVIDERS = {
     "welcometothejungle": {
         "board": "Welcome to the Jungle",
         "sender": re.compile(r"@([\w.-]+\.)?(welcometothejungle\.com|otta\.com)$", re.I)},
-    # The three boards below are reached only through the re-mailer under them: none of them
-    # sends its own alert mail here, and joblookup.com cannot be crawled at all (DataDome
-    # answers every job page with a 403, headless Chromium included), so this is the only
+    # The three boards below are re-mailed by the sender under them. talent.com also mails its
+    # own alert, HTML only, and himalaya's rendering of it drops every job title, so that mail
+    # is read from its HTML part. joblookup.com cannot be crawled at all (DataDome answers
+    # every job page with a 403, headless Chromium included), so the re-mailer is the only
     # route its postings have into the project.
-    "talent": {"board": "Talent", "sender": re.compile(r"@([\w.-]+\.)?talent\.com$", re.I)},
+    "talent": {"board": "Talent", "sender": re.compile(r"@([\w.-]+\.)?talent\.com$", re.I),
+               "read_html": True},
     "joblookup": {"board": "JobLookup",
                   "sender": re.compile(r"@([\w.-]+\.)?joblookup\.com$", re.I)},
     "thebigjobsite": {"board": "The Big Job Site",
@@ -105,6 +109,19 @@ OTTA_JOB_PATH = re.compile(r"^/jobs/([\w-]+)$")
 # joblookup.com/<country>/dispatch/job/publisher/<slug> — the slug is the advert. The site
 # states no numeric id anywhere a mail can reach, so the slug is the identity.
 JOBLOOKUP_JOB_PATH = re.compile(r"/dispatch/job/publisher/([\w-]+)$")
+
+
+def talent_ad_id(url: str) -> str:
+    """The advert id in a talent.com /redirect or /view link, or "".
+
+    The board and the re-mailer write the numeric id; talent.com's own alert mail writes a
+    short hex one (`/redirect?id=feee4046b9f5`) that /view answers with a 301 to the numeric.
+    """
+    parts = urlsplit(url)
+    if not (re.search(r"(^|\.)talent\.com$", host_of(url)) and re.match(r"^/(redirect|view)$", parts.path)):
+        return ""
+    ident = (parse_qs(parts.query).get("id") or [""])[0]
+    return ident if re.fullmatch(r"[0-9a-f]+", ident) else ""
 
 
 def haystack_job_uuid(url: str) -> str:
@@ -231,12 +248,17 @@ def read_html_part(label: str, message_id, was_seen: bool) -> str:
     return html_to_text(html) if html else ""
 
 
-def read_message(label: str, message_id, was_seen: bool = True) -> str:
+def read_message(label: str, message_id, was_seen: bool = True, html: bool = False) -> str:
     """A mail's body as text, from the HTML part when the plain one says nothing.
 
     A body with no link in it cannot yield a lead whatever it says, so it is the test for
     "the plain part is a stub" — and it costs the extra export only on mails that need it.
+    `html` reads the HTML part first, for a provider whose plain rendering loses the titles.
     """
+    if html:
+        body = read_html_part(label, message_id, was_seen)
+        if body:
+            return body
     body = himalaya(["message", "read", "--preview", "-f", label, str(message_id)])
     if URL_RE.search(body):
         return body
@@ -322,9 +344,7 @@ def allows_url(provider: str, url: str) -> bool:
     if provider == "talent":
         # The mail links /redirect?...&id=<n>; the board's own shape is /view?id=<n>. Both are
         # the advert, and unwrap_magic_link reduces the first to the second.
-        return bool(re.search(r"(^|\.)talent\.com$", host)
-                    and re.match(r"^/(redirect|view)$", path)
-                    and (parse_qs(parts.query).get("id") or [""])[0].isdigit())
+        return bool(talent_ad_id(url))
 
     if provider == "joblookup":
         return bool(re.search(r"(^|\.)joblookup\.com$", host)
@@ -424,9 +444,9 @@ def unwrap_magic_link(url: str) -> str:
     # talent.com/redirect?...&id=<n>&bpid=<per-recipient>&initiator=... — the id is the advert
     # and the rest is this recipient's click. Reduced to the shape the talent *board* writes,
     # /view?id=<n>, so one pasted URL is recognised as both boards' row downstream.
-    if re.search(r"(^|\.)talent\.com$", host) and re.match(r"^/(redirect|view)$", parts.path):
-        ident = (parse_qs(parts.query).get("id") or [""])[0]
-        return f"https://{parts.netloc}/view?id={ident}" if ident.isdigit() else url
+    talent = talent_ad_id(url)
+    if talent:
+        return f"https://{parts.netloc}/view?id={talent}"
 
     # joblookup.com/uk/dispatch/job/publisher/<slug>?ptkn=<the recipient's email address>
     # &ptms=<signed blob>&utm_* — none of the query is the advert, and ptkn is personal data
@@ -509,7 +529,16 @@ def resolve_redirect(url: str) -> str:
         if nxt == current:
             break
         current = nxt
-    return unwrap_magic_link(current)
+    current = unwrap_magic_link(current)
+    # talent.com's own mail names an advert by a short hex id, which is not the board's. The
+    # public /view page answers it with a 301 to /view?id=<n>, the board's own id; reading that
+    # Location is one anonymous request, the recipient's click parameters already stripped.
+    talent = talent_ad_id(current)
+    if talent and not talent.isdigit():
+        nxt = _location(current).strip()
+        if nxt:
+            current = unwrap_magic_link(urljoin(current, nxt))
+    return current
 
 
 def normalise_raw_url(s: str) -> str:
@@ -630,181 +659,6 @@ BLOCK_NOISE = re.compile(
     # LinkedIn's equivalents, one per card count. Same failure as the Indeed line above.
     r"|an? new job matches your preferences|new jobs match your preferences"
     r"|from:|to:|subject:|date:|\d+ (new )?jobs?\b)", re.I)
-
-TOTALJOBS_TERMS = re.compile(
-    r"^(permanent|contract|temporary|full[- ]?time|part[- ]?time|freelance|apprenticeship"
-    r"|from [£$€]|up to [£$€]|[£$€]|competitive|(starting |basic )?salary\b)", re.I)
-
-
-def at(rows: list[str], index: int) -> str:
-    try:
-        return rows[index] or ""
-    except IndexError:
-        return ""
-
-
-def indeed_listing(before, after, prefix) -> dict:
-    # Title / "Company - Location" / salary / ... / <url>
-    company, _, location = at(before, 1).partition(" - ")
-    return {"title": at(before, 0), "company": company, "location": location}
-
-
-# The lines a LinkedIn alert opens with, above its first card. BLOCK_NOISE strips the ones we
-# have seen; this is the backstop for the one we have not.
-LINKEDIN_INTRO = re.compile(r"^(your job alert for|an? new jobs? match|new jobs? match"
-                            r"|\d+ new jobs?)", re.I)
-
-
-def linkedin_listing(before, after, prefix) -> dict:
-    """Title / Company / Location / ... / "View job: <url>"."""
-    title = at(before, 0)
-    if LINKEDIN_INTRO.match(title):
-        # An intro line BLOCK_NOISE does not know yet. Saying nothing leaves the subject line
-        # to answer; promoting this to a title shunts company and location along by one and
-        # the row reads as a real job with invented fields.
-        return {}
-    return {"title": title, "company": at(before, 1), "location": at(before, 2)}
-
-
-# "Salary: £49,000 - £59,000 a year" / "Job type: Full-time" — the first stated term is what
-# marks the end of a card's identity in Indeed's single-role mail.
-INDEED_TERMS = re.compile(r"^(salary|job type|work setting|pay|shift and schedule):", re.I)
-
-
-def indeed_role_listing(before, after, prefix) -> dict:
-    # ...intro sentence / Title / Company / Location / "Salary: ..." / "Job type: ..." / link
-    marked = next((i for i, line in enumerate(before) if INDEED_TERMS.match(line)), len(before))
-    card = before[max(0, marked - 3):marked]
-    return {"title": at(card, 0), "company": at(card, 1), "location": at(card, 2)}
-
-
-def totaljobs_digest(before, after, prefix) -> dict:
-    # Title / <url> / Company / Location / contract / salary
-    return {"title": at(before, -1), "company": at(after, 0), "location": at(after, 1)}
-
-
-def totaljobs_recommendation(before, after, prefix) -> dict:
-    # ...intro / Title / Company / Location / contract / salary / "Apply Now" / <url> / JD text
-    tail = [line for line in before if not TOTALJOBS_TERMS.match(line)][-3:]
-    return {"title": at(tail, 0), "company": at(tail, 1), "location": at(tail, 2)}
-
-
-def jobright_alert(before, after, prefix) -> dict:
-    # Company / "industry - stage" / NN% / "<title> (<url>)" / [salary] / Location.
-    # Digest variants omit the inline title — it exists only in the HTML part.
-    title = re.sub(r"\s*\|.*$", "", str(prefix or ""))
-    title = re.sub(r"\bjob details\b", "", title, flags=re.I).strip()
-    return {
-        "title": title,
-        "company": at(before, 0),
-        "location": next((line for line in after if not re.match(r"^[£$€]", line)), ""),
-    }
-
-
-def haystack_alert(before, after, prefix) -> dict:
-    # "🔥 8 hours agoTechnology" / Title / "🏢 Company"
-    # / "📍 Location 🇬🇧  •  💰 pay" / "Apply Now →" / <url>.
-    # The emoji are the labels — the words around them are free text and the layout of a card
-    # is otherwise indistinguishable from the digest's own headings.
-    company_at = next((i for i, line in enumerate(before) if line.startswith("🏢")), -1)
-    if company_at < 0:
-        return {}
-    place = next((line for line in before[company_at + 1:] if line.startswith("📍")), "")
-    place = re.split(r"\s*[•|]", place.lstrip("📍 "))[0]
-    place = re.sub(r"[\U0001F1E6-\U0001F1FF]", "", place).strip().strip(",").strip()
-    return {"title": at(before, company_at - 1),
-            "company": before[company_at].lstrip("🏢 ").strip(),
-            "location": place}
-
-
-# "salary: £80-95k" and "salary above your minimum" — Welcome to the Jungle states pay on
-# its own line, which is what marks the end of a card.
-WTTJ_PAY = re.compile(r"^salary\b", re.I)
-
-
-def welcometothejungle_alert(before, after, prefix) -> dict:
-    # Company / what the company does / Title / "salary: ..." / "<location>  <url>".
-    # The link ends the location line, so the card is the block above it and the location is
-    # what precedes the link on the link's own line.
-    pay_at = next((i for i in range(len(before) - 1, -1, -1) if WTTJ_PAY.match(before[i])),
-                  len(before))
-    # The body writes the link in parentheses, so the "(" is the last thing before it.
-    place = re.sub(r"\s+", " ", str(prefix or "")).strip().rstrip("(").strip()
-    return {"title": at(before, pay_at - 1),
-            "company": at(before, pay_at - 3),
-            "location": place}
-
-
-def joblookup_digest(before, after, prefix) -> dict:
-    # Title / <url> / "NEW" / "Company, TOWN, COUNTY" / "more details" / <url> / "Apply" / <url>.
-    # All three links are the same advert, so only the first attribution is kept.
-    company, _, place = at(after, 0).partition(",")
-    return {"title": at(before, -1), "company": company.strip(), "location": place.strip()}
-
-
-def talent_digest(before, after, prefix) -> dict:
-    # "Good Match" / Title / <url> / "Location, England, gb" / summary / "more details" / <url>.
-    # These mails name no employer at all — the board's own scan is what states the company,
-    # and inventing one here would poison dedup downstream.
-    return {"title": at(before, -1), "company": "", "location": at(after, 0)}
-
-
-def thebigjobsite_digest(before, after, prefix) -> dict:
-    # Title / <url> / "Posted by" / Company / salary / contract / Location / "View job" / <url>.
-    posted_at = next((i for i, line in enumerate(after) if re.fullmatch(r"posted by", line, re.I)), -1)
-    if posted_at < 0:
-        return {}
-    return {"title": at(before, -1),
-            "company": at(after, posted_at + 1),
-            "location": at(after, -1)}
-
-
-# One template = one body layout, identified by a signature and read by an adaptor. Providers
-# ship several and change them without notice, so this matches on what the body says, not on
-# which label the mail arrived under. First matching signature wins; order matters only where
-# two signatures could both fire (specific before generic).
-TEMPLATES = [
-    {"id": "linkedin-job-alert", "provider": "linkedin",
-     "signature": re.compile(r"^\s*View job:", re.I | re.M), "adaptor": linkedin_listing},
-    # One role, addressed personally: "...could align with this Senior Software Engineer role
-    # at Edun Ltd". Listed before the generic match mail, whose wording it otherwise matches.
-    {"id": "indeed-role-match", "provider": "indeed",
-     "signature": re.compile(r"could (?:align with|be an? [a-z ]*match for) this .{0,80}? role at", re.I),
-     "adaptor": indeed_role_listing},
-    {"id": "indeed-job-alert", "provider": "indeed",
-     "signature": re.compile(r"Indeed Job Alert", re.I), "adaptor": indeed_listing},
-    # donotreply@match.indeed.com — different mail, same listing layout as the alert.
-    {"id": "indeed-match", "provider": "indeed",
-     "signature": re.compile(r"could be a match for this"
-                             r"|based on your preferences, profile and activity on Indeed", re.I),
-     "adaptor": indeed_listing},
-    {"id": "totaljobs-search-digest", "provider": "totaljobs",
-     "signature": re.compile(r"new jobs that match your search|Check out your latest matches"
-                             r"|Picked for you", re.I),
-     "adaptor": totaljobs_digest},
-    {"id": "totaljobs-recommendation", "provider": "totaljobs",
-     "signature": re.compile(r"We recommend this job for you", re.I),
-     "adaptor": totaljobs_recommendation},
-    {"id": "haystack-alert", "provider": "haystack",
-     "signature": re.compile(r"NEW JOBS MATCHING YOUR SEARCH", re.I), "adaptor": haystack_alert},
-    {"id": "welcometothejungle-alert", "provider": "welcometothejungle",
-     "signature": re.compile(r"new jobs matching your search preferences", re.I),
-     "adaptor": welcometothejungle_alert},
-    {"id": "jobright-alert", "provider": "jobright",
-     "signature": re.compile(r"Jobright Instant Alert|curated to align with your preferences", re.I),
-     "adaptor": jobright_alert},
-    # One sender, three layouts, one per board it re-mails. The signatures are the mailer's own
-    # headings; the `a=<feed>` in every link agrees with them but is not relied on, because a
-    # layout change is what breaks an adaptor and the heading is what a layout change moves.
-    {"id": "job24-joblookup", "provider": "job24",
-     "signature": re.compile(r"you have some new matching jobs", re.I),
-     "adaptor": joblookup_digest},
-    {"id": "job24-talent", "provider": "job24",
-     "signature": re.compile(r"Recommended Jobs for You", re.I), "adaptor": talent_digest},
-    {"id": "job24-thebigjobsite", "provider": "job24",
-     "signature": re.compile(r"Busy\? Not getting exactly matching jobs", re.I),
-     "adaptor": thebigjobsite_digest},
-]
 
 
 def detect_template(provider: str, body: str) -> dict | None:
@@ -1018,7 +872,8 @@ def scan(cfg: dict, limit: int | None = None, allow_disabled: bool = False,
             for envelope in envelopes:
                 try:
                     body = read_message(meta["label"], envelope.get("id"),
-                                        was_seen="Seen" in (envelope.get("flags") or []))
+                                        was_seen="Seen" in (envelope.get("flags") or []),
+                                        html=PROVIDERS[meta["provider"]].get("read_html", False))
                 except MailError as failure:
                     print(f"  message {envelope.get('id')}: {failure}")
                     continue
