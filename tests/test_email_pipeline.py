@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "reed_crawler"))
 
 import email_pipeline as email
+from email_adaptors.linkedin import linkedin_listing
 
 # Bodies trimmed from real alert mail: enough structure for the block splitter, with the
 # footers kept because rejecting them is half of what the URL rules are for.
@@ -405,7 +406,7 @@ def test_a_linkedin_single_job_alert_reads_the_card_not_the_intro() -> None:
 def test_an_unknown_linkedin_intro_is_left_to_the_subject_line() -> None:
     # The backstop for the next intro wording BLOCK_NOISE has not been taught: say nothing
     # rather than promote it to a title and invent the fields beneath it.
-    assert email.linkedin_listing(["Your job alert for engineer", "Acme", "Leeds"], [], "") == {}
+    assert linkedin_listing(["Your job alert for engineer", "Acme", "Leeds"], [], "") == {}
 
 
 # --------------------------------------------------------------------------- re-mailed boards
@@ -537,6 +538,56 @@ def test_the_talent_board_and_its_remailed_mail_agree_on_an_id():
     leads, _ = job24_leads(JOB24_TALENT, TALENT_AD, "neuvoo")
     assert leads[0].job_id == "talent-" + talent_pipeline.talent_job_id(leads[0].url)
     assert email.job_id_from_url(leads[0].url) == "talent-559886320684969191"
+
+
+# talent.com's own alert, as html_to_text renders its HTML part (himalaya's plain rendering
+# drops every title). Each advert is linked twice, and a badge may sit above the title.
+TALENT_ALERT = """\
+We pulled these jobs just for you. Start exploring now
+https://uk.talent.com/en/?search_id=x&user_id=someone&click_type=em-logo-header
+Your Talent․com daily job alert for Senior Software Engineer
+Leeds
+Talent.com's pick
+Senior Software Engineer, Java
+https://uk.talent.com/redirect?id=feee4046b9f5&user_id=someone&bpid=9f4d27c9
+Leeds, West Yorkshire, GB
+Rockstar Games
+Best match
+Near you
+https://uk.talent.com/redirect?id=feee4046b9f5&user_id=someone&bpid=9f4d27c9
+URGENTLY HIRING
+Senior Software Engineer
+https://uk.talent.com/redirect?id=75cce55c487e&user_id=someone&bpid=95f74a79
+GB
+Civica
+https://uk.talent.com/redirect?id=75cce55c487e&user_id=someone&bpid=95f74a79
+View more jobs
+https://uk.talent.com/jobs?k=Software+Engineer
+"""
+
+
+def test_talent_alert_reads_each_card_and_takes_the_board_id_from_the_redirect(monkeypatch):
+    """The mail's short id is not the board's; /view answers it with a 301 to the numeric one.
+
+    Only that anonymous /view is read, never the /redirect, which is the recipient's click.
+    """
+    board_ids = {"feee4046b9f5": "638480885511163640", "75cce55c487e": "638480892641414904"}
+
+    def location(url):
+        assert url.startswith("https://uk.talent.com/view?id=") and "user_id" not in url, url
+        return f"/view?id={board_ids[url.rsplit('=', 1)[1]]}"
+
+    monkeypatch.setattr(email, "_location", location)
+    leads, template = leads_for("job/discovery/talent", "talent",
+                                "Senior Software Engineer jobs you don't want to miss",
+                                "no-reply@alerts.talent.com", TALENT_ALERT)
+    assert template == "talent-alert"
+    assert [(l.job_id, l.role_title, l.company, l.location) for l in leads] == [
+        ("talent-638480885511163640", "Senior Software Engineer, Java", "Rockstar Games",
+         "Leeds, West Yorkshire, GB"),
+        ("talent-638480892641414904", "Senior Software Engineer", "Civica", "GB"),
+    ]
+    assert leads[0].url == "https://uk.talent.com/view?id=638480885511163640"
 
 
 def test_a_stub_plain_part_falls_back_to_the_html_and_leaves_the_flag_alone(monkeypatch):

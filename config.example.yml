@@ -182,6 +182,10 @@ boards:
       # max_urls_per_message above if you want all of them rather than the first 12.
       - label: job/discovery/job24
         provider: job24
+      # talent.com's own daily alert. Its links carry a short id that talent.com redirects to
+      # the talent board's own, so a job actioned from the mail reads as actioned there too.
+      - label: job/discovery/talent
+        provider: talent
 
   # --- Aggregator feeds -------------------------------------------------------------
   # One endpoint publishing many companies' postings. Plain HTTP GETs returning JSON or XML,
